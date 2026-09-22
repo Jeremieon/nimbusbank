@@ -1,0 +1,107 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-postgres}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./postgres/init-multi-db.sh:/docker-entrypoint-initdb.d/init-multi-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  auth:
+    build: ./services/auth
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/auth
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-15}
+      JWT_REFRESH_EXPIRE_DAYS: ${JWT_REFRESH_EXPIRE_DAYS:-7}
+      OTP_EXPIRE_MINUTES: ${OTP_EXPIRE_MINUTES:-5}
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    volumes:
+      # Named volume, not a bind mount: the RSA keypair auth-service
+      # generates on first boot lives only inside Docker, never on the host
+      # filesystem, and survives container recreation as long as the volume
+      # does.
+      - rsa_keys:/keys
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  accounts:
+    build: ./services/accounts
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/accounts
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8002:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  transfers:
+    build: ./services/transfers
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/transfers
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8003:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    depends_on:
+      auth:
+        condition: service_healthy
+      accounts:
+        condition: service_healthy
+      transfers:
+        condition: service_healthy
+
+volumes:
+  db_data:
+  rsa_keys:

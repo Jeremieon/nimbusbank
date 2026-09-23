@@ -56,3 +56,40 @@ export const transfers = {
   list: (accountId) => request(`/transfers/transfers?account_id=${accountId}`),
   adminOverride: (payload) => request('/transfers/transfers/admin-override', { method: 'POST', body: JSON.stringify(payload) }),
 }
+
+// kyc-service — routes start with /kyc already, so the full gateway path is
+// /api/kyc/kyc/... .
+export const kyc = {
+  // Multipart upload: build a FormData body and send ONLY the Authorization
+  // header — do NOT set Content-Type manually, or the browser won't add the
+  // multipart boundary. This bypasses the shared JSON `request` helper.
+  uploadDocument: async (docType, file) => {
+    const fd = new FormData()
+    fd.append('doc_type', docType)
+    fd.append('file', file)
+    const res = await fetch(`${BASE}/kyc/kyc/upload`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { ...authHeader() },
+      body: fd,
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error((data && data.detail) || 'Upload failed')
+    return data
+  },
+  list: () => request('/kyc/kyc/documents'),
+  get: (id) => request(`/kyc/kyc/${id}`),
+  downloadUrl: (id) => `${BASE}/kyc/kyc/${id}/download`,
+  pending: () => request('/kyc/kyc/pending'),
+  review: (id, status) => request(`/kyc/kyc/${id}/review`, { method: 'POST', body: JSON.stringify({ status }) }),
+}
+
+// support-service — routes start with /tickets already, so the full gateway
+// path is /api/support/tickets/... .
+export const support = {
+  createTicket: (payload) => request('/support/tickets', { method: 'POST', body: JSON.stringify(payload) }),
+  listMine: () => request('/support/tickets'),
+  listAll: () => request('/support/tickets/all'),
+  getTicket: (id) => request(`/support/tickets/${id}`),
+  postMessage: (id, payload) => request(`/support/tickets/${id}/messages`, { method: 'POST', body: JSON.stringify(payload) }),
+}

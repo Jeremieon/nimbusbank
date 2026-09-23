@@ -27,6 +27,12 @@ export default function Layout({ children, authed = true }) {
               <NavLink to="/transfer" className={({ isActive }) => (isActive ? 'active' : '')}>
                 Transfer
               </NavLink>
+              <NavLink to="/kyc" className={({ isActive }) => (isActive ? 'active' : '')}>
+                Verify ID
+              </NavLink>
+              <NavLink to="/support" className={({ isActive }) => (isActive ? 'active' : '')}>
+                Support
+              </NavLink>
               <NavLink to="/security" className={({ isActive }) => (isActive ? 'active' : '')}>
                 Security
               </NavLink>

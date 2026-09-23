@@ -87,6 +87,50 @@ services:
       timeout: 5s
       retries: 5
 
+  kyc:
+    build: ./services/kyc
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/kyc
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8004:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  support:
+    build: ./services/support
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/support
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8005:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   gateway:
     build:
       context: .
@@ -100,6 +144,10 @@ services:
       accounts:
         condition: service_healthy
       transfers:
+        condition: service_healthy
+      kyc:
+        condition: service_healthy
+      support:
         condition: service_healthy
 
 volumes:

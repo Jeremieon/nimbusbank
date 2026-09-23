@@ -55,8 +55,8 @@ def _to_out(doc: KycDocument) -> KycDocumentOut:
 @app.on_event("startup")
 async def on_startup() -> None:
     os.makedirs(UPLOAD_DIR, exist_ok=True)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Schema creation/evolution is owned by Alembic now (the container runs
+    # `alembic upgrade head` before uvicorn starts), so startup only seeds.
     async with AsyncSessionLocal() as session:
         await seed_documents(session, UPLOAD_DIR)
 

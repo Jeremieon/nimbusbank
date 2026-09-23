@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
-from .database import AsyncSessionLocal, Base, engine, get_db
+from .database import get_db
 from .models import RequestLog
 from .schemas import OverviewResponse, RequestLogOut, TrafficResponse
 from .security import get_current_user  # require_admin defined but deliberately unused
@@ -43,10 +43,9 @@ def _to_out(row: RequestLog) -> RequestLogOut:
     )
 
 
-@app.on_event("startup")
-async def on_startup() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+# Schema creation/evolution is owned by Alembic now (the container runs
+# `alembic upgrade head` before uvicorn starts). admin-service has no seed, so
+# it no longer needs a startup hook at all.
 
 
 @app.get("/health", tags=["health"], summary="Liveness check")

@@ -92,8 +92,8 @@ def _set_refresh_cookie(response: Response, user_id: str) -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     ensure_keys()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Schema creation/evolution is owned by Alembic now (the container runs
+    # `alembic upgrade head` before uvicorn starts), so startup only seeds.
     async with AsyncSessionLocal() as session:
         await seed_users(session)
 

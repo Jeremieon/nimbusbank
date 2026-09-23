@@ -487,9 +487,41 @@ correct; see `gateway/nginx.conf` and each service's `main.py`.
    send a transfer, and check its transaction history.
 
 Postgres data and the auth-service RSA keypair live in named docker
-volumes, untouched by image rebuilds. Tables are created automatically on
-each service's startup and only seeded if empty, so re-running `docker
-compose up -d --build` never duplicates or loses data.
+volumes, untouched by image rebuilds. Each service's schema is created and
+evolved by Alembic (see below) — every container runs `alembic upgrade head`
+on startup, then seeds only if empty — so re-running `docker compose up -d
+--build` never duplicates or loses data.
+
+## Database migrations
+
+Schema is managed with [Alembic](https://alembic.sqlalchemy.org/), one
+independent migration history per service. Each service owns its own
+`alembic.ini`, `alembic/env.py`, and `alembic/versions/` under
+`services/<svc>/`, and its own `alembic_version` table inside its own
+database — there is no cross-service migration, exactly as there is no
+cross-service database access. The app talks to Postgres over `asyncpg`;
+Alembic runs its migrations with the sync `psycopg2` driver (`env.py`
+rewrites `+asyncpg` → `+psycopg2` from `DATABASE_URL`).
+
+On startup each container's `entrypoint.sh` runs `alembic upgrade head`
+before uvicorn, so tables exist before the app seeds. The one-time baseline
+migration for every service was generated fresh against an empty database,
+so **schema changes no longer require `docker compose down -v`** (which
+wipes all data). To change a schema:
+
+```bash
+# 1. edit the service's app/models.py
+# 2. generate a migration (bind-mount so the file lands on the host):
+docker compose run --rm -v "$(pwd)/services/<svc>:/app" --entrypoint "" <svc> \
+  alembic revision --autogenerate -m "describe the change"
+# 3. apply it live, no data loss:
+docker compose up -d --build <svc>
+```
+
+Step 3 rebuilds just that service and its entrypoint runs `alembic upgrade
+head` against the existing database, adding the new column/table while
+leaving seeded rows and balances intact. Commit the generated file in
+`services/<svc>/alembic/versions/` — migrations are part of the repo.
 
 ### Local frontend dev (optional, faster iteration)
 

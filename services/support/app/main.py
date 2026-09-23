@@ -60,8 +60,8 @@ def _message_out(msg: Message) -> MessageOut:
 
 @app.on_event("startup")
 async def on_startup() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Schema creation/evolution is owned by Alembic now (the container runs
+    # `alembic upgrade head` before uvicorn starts), so startup only seeds.
     async with AsyncSessionLocal() as session:
         await seed_tickets(session)
 

@@ -11,6 +11,12 @@ class Settings(BaseSettings):
     # *signature* but deliberately skips the `exp` claim — see security.py.
     auth_jwks_url: str = "http://auth:8000/.well-known/jwks.json"
 
+    # Where this service fires its fire-and-forget request-log events. Points
+    # at admin-service's internal ingest sink over the docker network. If admin
+    # is down the log POST is swallowed and the real request is unaffected
+    # (see obslog.py).
+    admin_ingest_url: str = "http://admin:8000/ingest"
+
     # Reserved for later phases (e.g. dialing rate limits up/down). Not yet
     # enforced anywhere in this codebase.
     security_level: str = "vulnerable"

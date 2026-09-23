@@ -11,6 +11,7 @@ from .config import settings
 from .database import AsyncSessionLocal, Base, engine, get_db
 from .fx import convert
 from .models import Account
+from .obslog import install_request_logging
 from .schemas import (
     AccountOut,
     AccountPatchRequest,
@@ -34,6 +35,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Fire-and-forget request logging to admin-service's /ingest sink. Never blocks
+# or fails a real request (see obslog.py); this service keeps working if admin
+# is down.
+install_request_logging(app, "accounts")
 
 STATEMENTS_DIR = os.path.join(os.path.dirname(__file__), "statements")
 

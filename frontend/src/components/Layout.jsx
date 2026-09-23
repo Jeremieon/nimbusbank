@@ -27,6 +27,9 @@ export default function Layout({ children, authed = true }) {
               <NavLink to="/transfer" className={({ isActive }) => (isActive ? 'active' : '')}>
                 Transfer
               </NavLink>
+              <NavLink to="/cards" className={({ isActive }) => (isActive ? 'active' : '')}>
+                Cards
+              </NavLink>
               <NavLink to="/kyc" className={({ isActive }) => (isActive ? 'active' : '')}>
                 Verify ID
               </NavLink>
@@ -35,6 +38,9 @@ export default function Layout({ children, authed = true }) {
               </NavLink>
               <NavLink to="/security" className={({ isActive }) => (isActive ? 'active' : '')}>
                 Security
+              </NavLink>
+              <NavLink to="/ops" className={({ isActive }) => (isActive ? 'active' : '')}>
+                Ops
               </NavLink>
               <button className="btn-ghost" onClick={onLogout}>
                 Log out

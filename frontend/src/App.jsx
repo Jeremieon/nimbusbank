@@ -2,9 +2,11 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 
 import AccountDetail from './pages/AccountDetail'
 import AgentConsole from './pages/AgentConsole'
+import Cards from './pages/Cards'
 import Dashboard from './pages/Dashboard'
 import Kyc from './pages/Kyc'
 import Login from './pages/Login'
+import Ops from './pages/Ops'
 import Register from './pages/Register'
 import Security from './pages/Security'
 import Support from './pages/Support'
@@ -21,6 +23,8 @@ export default function App() {
       <Route path="/accounts/:id" element={<AccountDetail />} />
       <Route path="/accounts/:id/history" element={<TransactionHistory />} />
       <Route path="/transfer" element={<Transfer />} />
+      <Route path="/cards" element={<Cards />} />
+      <Route path="/ops" element={<Ops />} />
       <Route path="/kyc" element={<Kyc />} />
       <Route path="/support" element={<Support />} />
       <Route path="/support/agent" element={<AgentConsole />} />

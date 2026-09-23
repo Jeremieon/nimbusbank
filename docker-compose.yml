@@ -23,6 +23,7 @@ services:
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-15}
       JWT_REFRESH_EXPIRE_DAYS: ${JWT_REFRESH_EXPIRE_DAYS:-7}
       OTP_EXPIRE_MINUTES: ${OTP_EXPIRE_MINUTES:-5}
+      ADMIN_INGEST_URL: http://admin:8000/ingest
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -49,6 +50,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/accounts
       AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -71,6 +73,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/transfers
       AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -93,6 +96,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/kyc
       AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -115,6 +119,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/support
       AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -124,6 +129,52 @@ services:
       db:
         condition: service_healthy
       auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cards:
+    build: ./services/cards
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/cards
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8006:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # admin-service is the central request-log sink and ops-traffic API. It has an
+  # unauthenticated /ingest + /admin/traffic view, so it deliberately does NOT
+  # depend on auth — it comes up on its own and starts collecting log events.
+  admin:
+    build: ./services/admin
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/admin
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8007:8000"
+    depends_on:
+      db:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -148,6 +199,10 @@ services:
       kyc:
         condition: service_healthy
       support:
+        condition: service_healthy
+      cards:
+        condition: service_healthy
+      admin:
         condition: service_healthy
 
 volumes:

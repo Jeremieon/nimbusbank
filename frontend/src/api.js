@@ -93,3 +93,24 @@ export const support = {
   getTicket: (id) => request(`/support/tickets/${id}`),
   postMessage: (id, payload) => request(`/support/tickets/${id}/messages`, { method: 'POST', body: JSON.stringify(payload) }),
 }
+
+// cards-service — routes start with /cards already, so the full gateway path
+// is /api/cards/cards/... . `get(id)` returns the FULL PAN + CVV (the exposure);
+// `listMine()` returns the masked, bank-like view.
+export const cards = {
+  issue: (payload) => request('/cards/cards', { method: 'POST', body: JSON.stringify(payload) }),
+  listMine: () => request('/cards/cards'),
+  get: (id) => request(`/cards/cards/${id}`),
+  update: (id, payload) => request(`/cards/cards/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  freeze: (id) => request(`/cards/cards/${id}/freeze`, { method: 'POST' }),
+  unfreeze: (id) => request(`/cards/cards/${id}/unfreeze`, { method: 'POST' }),
+}
+
+// admin-service — the ops console. Its routes are /admin/traffic and
+// /admin/overview, so the full gateway path keeps the double segment:
+// /api/admin/admin/traffic . (/ingest is an internal service-to-service sink
+// and is intentionally NOT exposed here.)
+export const admin = {
+  traffic: () => request('/admin/admin/traffic'),
+  overview: () => request('/admin/admin/overview'),
+}

@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import settings
 from .database import AsyncSessionLocal, Base, engine, get_db
 from .models import KycDocument
+from .obslog import install_request_logging
 from .schemas import KycDocumentOut, ReviewRequest
 from .security import fetch_jwks, get_current_user  # require_admin defined but deliberately unused
 from .seed import seed_documents
@@ -27,6 +28,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Fire-and-forget request logging to admin-service's /ingest sink. Never blocks
+# or fails a real request (see obslog.py); this service keeps working if admin
+# is down.
+install_request_logging(app, "kyc")
 
 # Uploaded KYC files land here. Created at startup.
 UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")

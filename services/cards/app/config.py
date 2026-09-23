@@ -4,16 +4,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     database_url: str
 
-    # kyc-service holds no signing key of its own — it fetches auth-service's
+    # cards-service holds no signing key of its own — it fetches auth-service's
     # public JWKS over the internal docker network and validates bearer tokens
     # against that. This mirrors how F5 XC itself validates JWTs at the edge
     # against a JWKS URL.
     auth_jwks_url: str = "http://auth:8000/.well-known/jwks.json"
 
-    # Where this service fires its fire-and-forget request-log events. Points
-    # at admin-service's internal ingest sink over the docker network. If admin
-    # is down the log POST is swallowed and the real request is unaffected
-    # (see obslog.py).
+    # Where this service fires its fire-and-forget request-log events. Points at
+    # admin-service's internal ingest sink over the docker network. Configurable
+    # via env; if admin-service is down the log POST is swallowed and the real
+    # request is unaffected (see obslog.py).
     admin_ingest_url: str = "http://admin:8000/ingest"
 
     # Reserved for later phases (e.g. dialing rate limits up/down). Not yet

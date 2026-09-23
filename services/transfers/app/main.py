@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import settings
 from .database import AsyncSessionLocal, Base, engine, get_db
 from .models import Transfer
+from .obslog import install_request_logging
 from .schemas import AdminOverrideRequest, TransferOut, TransferRequest
 from .security import fetch_jwks, get_current_user, require_admin
 from .seed import seed_transfers
@@ -24,6 +25,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Fire-and-forget request logging to admin-service's /ingest sink. Never blocks
+# or fails a real request (see obslog.py); this service keeps working if admin
+# is down.
+install_request_logging(app, "transfers")
 
 
 # accounts-service base URL on the internal docker network — this is the

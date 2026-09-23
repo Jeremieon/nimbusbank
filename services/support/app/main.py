@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .config import settings
 from .database import AsyncSessionLocal, Base, engine, get_db
 from .models import Message, Ticket
+from .obslog import install_request_logging
 from .schemas import (
     CreateTicketRequest,
     MessageOut,
@@ -30,6 +31,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Fire-and-forget request logging to admin-service's /ingest sink. Never blocks
+# or fails a real request (see obslog.py); this service keeps working if admin
+# is down.
+install_request_logging(app, "support")
 
 
 def _ticket_out(ticket: Ticket) -> TicketOut:

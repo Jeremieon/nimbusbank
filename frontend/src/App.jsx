@@ -4,6 +4,7 @@ import AccountDetail from './pages/AccountDetail'
 import Dashboard from './pages/Dashboard'
 import Login from './pages/Login'
 import Register from './pages/Register'
+import Security from './pages/Security'
 import Transfer from './pages/Transfer'
 import TransactionHistory from './pages/TransactionHistory'
 
@@ -17,6 +18,7 @@ export default function App() {
       <Route path="/accounts/:id" element={<AccountDetail />} />
       <Route path="/accounts/:id/history" element={<TransactionHistory />} />
       <Route path="/transfer" element={<Transfer />} />
+      <Route path="/security" element={<Security />} />
     </Routes>
   )
 }

@@ -25,8 +25,18 @@ export const auth = {
   register: (payload) => request('/auth/register', { method: 'POST', body: JSON.stringify(payload) }),
   login: (payload) => request('/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   verifyOtp: (payload) => request('/auth/login/otp/verify', { method: 'POST', body: JSON.stringify(payload) }),
+  verifyTotp: (payload) => request('/auth/login/totp/verify', { method: 'POST', body: JSON.stringify(payload) }),
   refresh: () => request('/auth/token/refresh', { method: 'POST' }),
   me: () => request('/auth/me'),
+}
+
+// Real TOTP (Google Authenticator) second factor — opt-in via the Security
+// page, alongside the weak echoed 4-digit OTP.
+export const totp = {
+  status: () => request('/auth/totp/status'),
+  enroll: () => request('/auth/totp/enroll', { method: 'POST' }),
+  confirm: (code) => request('/auth/totp/confirm', { method: 'POST', body: JSON.stringify({ code }) }),
+  disable: () => request('/auth/totp/disable', { method: 'POST' }),
 }
 
 // accounts-service — every route already starts with /accounts on the

@@ -36,11 +36,34 @@ class LoginResponse(BaseModel):
     # a mail/SMS server to exercise the login flow. A real bank would send
     # this out-of-band and never put it in an API response.
     otp: str
+    # If True, the user enrolled a real TOTP authenticator app and the
+    # frontend should collect a 6-digit code and call /login/totp/verify
+    # instead of the weak-OTP path. Both paths coexist.
+    totp_enabled: bool = False
 
 
 class OtpVerifyRequest(BaseModel):
     user_id: str
     otp: str = Field(pattern=r"^\d{4}$")
+
+
+class TotpVerifyRequest(BaseModel):
+    user_id: str
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class TotpConfirmRequest(BaseModel):
+    code: str = Field(pattern=r"^\d{6}$")
+
+
+class TotpEnrollResponse(BaseModel):
+    secret: str
+    otpauth_uri: str
+    qr_png_base64: str
+
+
+class TotpStatusResponse(BaseModel):
+    totp_enabled: bool
 
 
 class TokenResponse(BaseModel):

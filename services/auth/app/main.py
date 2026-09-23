@@ -1,7 +1,11 @@
+import base64
+import io
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pyotp
+import qrcode
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
@@ -18,6 +22,10 @@ from .schemas import (
     RegisterRequest,
     RegisterResponse,
     TokenResponse,
+    TotpConfirmRequest,
+    TotpEnrollResponse,
+    TotpStatusResponse,
+    TotpVerifyRequest,
     UserOut,
 )
 from .security import (
@@ -161,7 +169,12 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     db.add(otp)
     await db.commit()
 
-    return LoginResponse(otp_required=True, user_id=str(user.id), otp=code)
+    return LoginResponse(
+        otp_required=True,
+        user_id=str(user.id),
+        otp=code,
+        totp_enabled=user.totp_enabled,
+    )
 
 
 @app.post(
@@ -200,6 +213,128 @@ async def verify_otp(payload: OtpVerifyRequest, response: Response, db: AsyncSes
     _set_refresh_cookie(response, str(user.id))
 
     return TokenResponse(access_token=access_token, user=_to_user_out(user))
+
+
+@app.post(
+    "/login/totp/verify",
+    response_model=TokenResponse,
+    tags=["auth"],
+    summary="Step 2 (TOTP path): verify a 6-digit authenticator code and issue tokens",
+)
+async def verify_totp_login(
+    payload: TotpVerifyRequest, response: Response, db: AsyncSession = Depends(get_db)
+):
+    """The real-second-factor counterpart to /login/otp/verify. A user who
+    enrolled an authenticator app (totp_enabled True) lands here instead of
+    the weak echoed-OTP path, and on success gets the exact same access token
+    + refresh cookie. The weak path is deliberately left fully intact for
+    everyone who hasn't enrolled."""
+    try:
+        user_id = uuid.UUID(payload.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id")
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.totp_enabled or not user.totp_secret:
+        raise HTTPException(status_code=400, detail="TOTP is not enabled for this user")
+
+    if not pyotp.TOTP(user.totp_secret).verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+
+    access_token = create_access_token(user_id=str(user.id), role=user.role, email=user.email)
+    _set_refresh_cookie(response, str(user.id))
+
+    return TokenResponse(access_token=access_token, user=_to_user_out(user))
+
+
+@app.get(
+    "/totp/status",
+    response_model=TotpStatusResponse,
+    tags=["totp"],
+    summary="Whether the current user has a confirmed authenticator app",
+)
+async def totp_status(current: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return TotpStatusResponse(totp_enabled=user.totp_enabled)
+
+
+@app.post(
+    "/totp/enroll",
+    response_model=TotpEnrollResponse,
+    tags=["totp"],
+    summary="Begin authenticator-app enrollment: generate a secret + QR (stays unconfirmed until /totp/confirm)",
+)
+async def totp_enroll(current: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Reuse an existing (as-yet-unconfirmed) secret rather than churning it on
+    # every page load; only generate a fresh one if none is stored.
+    if not user.totp_secret:
+        user.totp_secret = pyotp.random_base32()
+        # totp_enabled stays False until /totp/confirm proves possession.
+        await db.commit()
+
+    otpauth_uri = pyotp.totp.TOTP(user.totp_secret).provisioning_uri(
+        name=user.email, issuer_name="NimbusBank"
+    )
+
+    img = qrcode.make(otpauth_uri)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_png_base64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    return TotpEnrollResponse(
+        secret=user.totp_secret,
+        otpauth_uri=otpauth_uri,
+        qr_png_base64=qr_png_base64,
+    )
+
+
+@app.post(
+    "/totp/confirm",
+    tags=["totp"],
+    summary="Confirm authenticator enrollment by submitting a valid 6-digit code",
+)
+async def totp_confirm(
+    payload: TotpConfirmRequest,
+    current: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.totp_secret:
+        raise HTTPException(status_code=400, detail="Start enrollment with /totp/enroll first")
+
+    if not pyotp.TOTP(user.totp_secret).verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+
+    user.totp_enabled = True
+    await db.commit()
+    return {"totp_enabled": True, "message": "Authenticator app enabled."}
+
+
+@app.post(
+    "/totp/disable",
+    tags=["totp"],
+    summary="Disable the authenticator app and clear its secret",
+)
+async def totp_disable(current: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    user.totp_secret = None
+    user.totp_enabled = False
+    await db.commit()
+    return {"totp_enabled": False, "message": "Authenticator app disabled."}
 
 
 @app.post(

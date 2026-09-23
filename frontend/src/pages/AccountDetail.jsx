@@ -2,10 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { accounts } from '../api'
-
-function formatCents(cents) {
-  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-}
+import Layout from '../components/Layout'
+import { formatMoney } from '../money'
 
 export default function AccountDetail() {
   const { id } = useParams()
@@ -51,73 +49,79 @@ export default function AccountDetail() {
   }
 
   return (
-    <div className="account-detail">
-      <div className="detail-header">
-        <p className="brand">NimbusBank</p>
-        <Link to="/dashboard" className="secondary-link">
-          Back to dashboard
-        </Link>
+    <Layout>
+      <div className="page-head">
+        <Link to="/dashboard" className="btn-outline">← Dashboard</Link>
+        <Link to={`/transfer?from=${id}`} className="btn">Send money</Link>
       </div>
 
       {error && <div className="error">{error}</div>}
 
       {account && (
         <>
-          <h1 className="title">
-            {account.account_type} — {account.account_number}
-          </h1>
-          <div className="kv">
-            <span>Balance</span>
-            <span>{formatCents(account.balance_cents)}</span>
-          </div>
-          <div className="kv">
-            <span>Currency</span>
-            <span>{account.currency}</span>
-          </div>
-          <div className="kv">
-            <span>Owner user id</span>
-            <span>{account.user_id}</span>
-          </div>
-          <div className="kv">
-            <span>SSN on file</span>
-            <span>•••-••-{account.ssn_full.slice(-4)}</span>
-          </div>
-          <div className="kv">
-            <span>Date of birth</span>
-            <span>{account.date_of_birth}</span>
-          </div>
-
-          <div className="actions-row">
-            <button className="secondary-link" onClick={onDownloadStatement}>
-              Download statement
-            </button>
-            <Link to={`/accounts/${id}/history`} className="secondary-link">
-              Transaction history
-            </Link>
-          </div>
-
-          <p className="section-label">Link an external account</p>
-          <p className="subtitle">
-            Enter a verification URL — the server fetches it and shows you what came back.
+          <p className="subtitle" style={{ margin: 0, textTransform: 'capitalize' }}>
+            {account.account_type} account
           </p>
-          <form onSubmit={onLinkExternal}>
-            <div className="field">
-              <label htmlFor="verification_url">Verification URL</label>
-              <input
-                id="verification_url"
-                value={linkUrl}
-                onChange={(e) => setLinkUrl(e.target.value)}
-                placeholder="https://example.com/verify"
-                required
-              />
+          <h1 className="page-title" style={{ marginBottom: 8 }}>{account.account_number}</h1>
+
+          <div className="detail-grid" style={{ marginTop: 22 }}>
+            <div className="card">
+              <p className="label" style={{ color: 'var(--muted)', fontWeight: 500, margin: 0 }}>
+                Available balance
+              </p>
+              <div className="big-balance">{formatMoney(account.balance_cents, account.currency)}</div>
+              <div className="kv">
+                <span className="k">Currency</span>
+                <span className="v">{account.currency}</span>
+              </div>
+              <div className="kv">
+                <span className="k">Account type</span>
+                <span className="v" style={{ textTransform: 'capitalize' }}>{account.account_type}</span>
+              </div>
+              <div className="kv">
+                <span className="k">Owner user id</span>
+                <span className="v">{account.user_id}</span>
+              </div>
+              <div className="kv">
+                <span className="k">SSN on file</span>
+                <span className="v">•••-••-{account.ssn_full.slice(-4)}</span>
+              </div>
+              <div className="kv">
+                <span className="k">Date of birth</span>
+                <span className="v">{account.date_of_birth}</span>
+              </div>
+
+              <div className="account-actions" style={{ marginTop: 20 }}>
+                <button className="btn-outline" onClick={onDownloadStatement}>Download statement</button>
+                <Link to={`/accounts/${id}/history`} className="btn-outline">Transactions</Link>
+              </div>
             </div>
-            <button className="primary" type="submit" disabled={linkLoading}>
-              {linkLoading ? 'Verifying…' : 'Verify & link'}
-            </button>
-          </form>
-          {linkResult && <pre className="raw-response">{JSON.stringify(linkResult, null, 2)}</pre>}
+
+            <div className="card">
+              <h3 style={{ marginTop: 0, fontSize: 18 }}>Verify external account</h3>
+              <p className="subtitle">
+                Enter a verification URL — we fetch it and show you what came back.
+              </p>
+              <form onSubmit={onLinkExternal}>
+                <div className="field">
+                  <label htmlFor="verification_url">Verification URL</label>
+                  <input
+                    id="verification_url"
+                    value={linkUrl}
+                    onChange={(e) => setLinkUrl(e.target.value)}
+                    placeholder="https://example.com/verify"
+                    required
+                  />
+                </div>
+                <button className="primary" type="submit" disabled={linkLoading}>
+                  {linkLoading ? 'Verifying…' : 'Verify & link'}
+                </button>
+              </form>
+              {linkResult && <pre className="raw-response">{JSON.stringify(linkResult, null, 2)}</pre>}
+            </div>
+          </div>
         </>
       )}
-    </div>
+    </Layout>
   )
 }

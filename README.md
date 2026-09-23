@@ -38,7 +38,7 @@ Summary, mapped to F5 XC's attack/feature categories:
 | SQL injection — f-string built into raw SQL | `services/accounts/app/main.py` (`search_accounts`) | WAF / OWASP Top 10: SQL Injection |
 | Path traversal — unsanitized `file` query param | `services/accounts/app/main.py` (`get_statement`) | API Security / WAF: Path Traversal |
 | SSRF — server fetches a fully attacker-controlled URL | `services/accounts/app/main.py` (`link_external_account`) | API Security / WAF: Server-Side Request Forgery |
-| BOLA — no check `from_account_id` belongs to caller | `services/transfers/app/main.py` (`create_transfer`) | API Security: BOLA / business-logic flaw |
+| BOLA — no check `from_account_id` belongs to caller (now *really* drains the target account via `/internal/apply-transfer`) | `services/transfers/app/main.py` (`create_transfer`) + `services/accounts/app/main.py` (`apply_transfer`) | API Security: BOLA / business-logic flaw |
 | No amount validation (negative allowed), no daily limit, no rate limit | `services/transfers/app/main.py` (`create_transfer`) | API Security / Bot Protection: unthrottled business logic |
 | BOLA — `GET /transfers?account_id=` has no ownership check | `services/transfers/app/main.py` (`list_transfers`) | API Security: Broken Object Level Authorization |
 | Stored XSS — `memo` rendered via `dangerouslySetInnerHTML` | `services/transfers/app/models.py` + `frontend/src/pages/TransactionHistory.jsx` | WAF / OWASP Top 10: Stored XSS |
@@ -173,6 +173,97 @@ curl -s -X POST http://localhost/api/transfers/transfers/admin-override \
 # succeeds even though $TOKEN belongs to a "customer", not an "admin"
 ```
 
+## Money movement, FX, and TOTP
+
+These are real features layered on top of the deliberately-vulnerable core —
+they make the app behave like an actual bank without softening any of the
+gaps above.
+
+### Transfers really move money (and convert currency)
+
+`POST /transfers` now does more than insert a row. After recording the
+transfer it calls accounts-service over the internal docker network at
+`POST http://accounts:8000/internal/apply-transfer` — the single place a
+balance actually changes. That endpoint debits the source account, credits
+the (currency-converted) destination, and commits atomically; the returned
+conversion details (`currency`, `to_amount_cents`, `to_currency`, `fx_rate`)
+are persisted back onto the transfer row. If the accounts call fails the
+transfer row is kept and marked `failed` instead of crashing the request.
+
+`/internal/apply-transfer` is **not** exposed through the gateway — it's a
+service-to-service call. It deliberately performs **no ownership check** and
+enforces **no balance floor** (balances may go negative), inheriting the same
+intentional stance as the rest of accounts-service. That's what turns the
+transfers-service BOLA into a real drain of someone else's account.
+
+FX is a fixed static table (USD per 1 unit), defined once in
+`services/accounts/app/fx.py` and mirrored client-side in
+`frontend/src/money.js` purely for the transfer form's live preview — the
+server stays authoritative on execution:
+
+| Currency | USD per unit |
+|---|---|
+| USD | 1.00 |
+| EUR | 1.08 |
+| GBP | 1.27 |
+| JPY | 0.0067 |
+| KES | 0.0078 |
+
+Conversion is `to_amount = round(from_amount * fx[from] / fx[to])`, and
+`fx_rate` is stored as the effective from→to multiplier.
+
+```bash
+# Same-currency transfer (alice's own USD checking 3 -> USD savings 4):
+# both balances move by 5000 cents.
+curl -s -X POST http://localhost/api/transfers/transfers \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"from_account_id": 3, "to_account_id": 4, "amount_cents": 5000, "memo": "same ccy"}' | jq
+
+# Cross-currency (USD acct 3 -> EUR acct 5): 10800 USD cents debited,
+# 10000 EUR cents credited (108.00 * 1.00/1.08 = 100.00), fx_rate ~0.9259.
+curl -s -X POST http://localhost/api/transfers/transfers \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"from_account_id": 3, "to_account_id": 5, "amount_cents": 10800, "memo": "USD->EUR"}' | jq
+
+# Re-GET both accounts to confirm the balances actually changed.
+curl -s http://localhost/api/accounts/accounts/3 -H "Authorization: Bearer $TOKEN" | jq .balance_cents
+curl -s http://localhost/api/accounts/accounts/5 -H "Authorization: Bearer $TOKEN" | jq .balance_cents
+```
+
+### Real TOTP (Google Authenticator), alongside the weak OTP
+
+The weak 4-digit echoed OTP path is untouched — it's a vulnerability and it
+stays. On top of it, a user can opt into a real RFC 6238 authenticator-app
+second factor from the Security page. Both paths coexist: `POST /login` now
+also returns `totp_enabled`, and the frontend routes to the 6-digit
+`POST /login/totp/verify` when it's true, or the weak `POST /login/otp/verify`
+when it's false.
+
+New auth-service endpoints (all bearer-authenticated except the login-step
+ones):
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /totp/enroll` | Generate a base32 secret (stays unconfirmed) and return `{secret, otpauth_uri, qr_png_base64}` |
+| `POST /totp/confirm` | Verify a 6-digit code and flip `totp_enabled` on |
+| `POST /totp/disable` | Clear the secret and turn TOTP off |
+| `GET /totp/status` | `{totp_enabled}` for the current user |
+| `POST /login/totp/verify` | Login step 2 for TOTP users — validates a 6-digit code, issues the same access token + refresh cookie as the OTP path |
+
+```bash
+# Enroll (returns the secret + an otpauth:// URI + a base64 PNG QR):
+curl -s -X POST http://localhost/api/auth/totp/enroll -H "Authorization: Bearer $TOKEN" | jq '{secret, otpauth_uri}'
+
+# Compute a code from the returned secret and confirm:
+CODE=$(python3 -c "import pyotp,sys;print(pyotp.TOTP(sys.argv[1]).now())" "$SECRET")
+curl -s -X POST http://localhost/api/auth/totp/confirm -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d "{\"code\":\"$CODE\"}" | jq
+
+# Next login reports totp_enabled=true; finish with /login/totp/verify:
+curl -s -X POST http://localhost/api/auth/login/totp/verify -H "Content-Type: application/json" \
+  -d "{\"user_id\":\"<uuid>\",\"code\":\"$CODE\"}" | jq
+```
+
 ## Stack
 
 - **Postgres 16**, one container, five databases: `auth`, `accounts`,
@@ -262,23 +353,29 @@ Five auth-service users, all with `is_verified=true` out of the box:
 | dave@nimbusbank.io | password123 | customer |
 
 Ten accounts (checking + savings per user), ids assigned sequentially by
-Postgres so they land at 1-10 on a fresh database:
+Postgres so they land at 1-10 on a fresh database. Each user's two accounts
+share one currency, so cross-user transfers exercise FX conversion:
 
-| Account id | Owner | Type |
-|---|---|---|
-| 1 | admin | checking |
-| 2 | admin | savings |
-| 3 | alice | checking |
-| 4 | alice | savings |
-| 5 | bob | checking |
-| 6 | bob | savings |
-| 7 | carol | checking |
-| 8 | carol | savings |
-| 9 | dave | checking |
-| 10 | dave | savings |
+| Account id | Owner | Type | Currency |
+|---|---|---|---|
+| 1 | admin | checking | USD |
+| 2 | admin | savings | USD |
+| 3 | alice | checking | USD |
+| 4 | alice | savings | USD |
+| 5 | bob | checking | EUR |
+| 6 | bob | savings | EUR |
+| 7 | carol | checking | GBP |
+| 8 | carol | savings | GBP |
+| 9 | dave | checking | JPY |
+| 10 | dave | savings | JPY |
 
 Three seeded transfers exist between accounts 3, 5, 7, and 9 so the
 transaction history view isn't empty on first load.
+
+All five seeded users stay on the weak echoed-OTP login path out of the box
+(`totp_enabled = false`) so the curl flows above keep working. Real
+authenticator-app (TOTP) enrollment is opt-in per user via the Security page
+in the UI — see "Money movement, FX, and TOTP" below.
 
 The five seeded user ids are fixed UUIDs shared (by hand, as literal
 constants) between `services/auth/app/seed.py` and

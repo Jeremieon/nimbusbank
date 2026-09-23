@@ -26,12 +26,21 @@ app.add_middleware(
 )
 
 
+# accounts-service base URL on the internal docker network — this is the
+# single place money actually moves and currency converts.
+ACCOUNTS_INTERNAL_URL = "http://accounts:8000/internal/apply-transfer"
+
+
 def _to_out(transfer: Transfer) -> TransferOut:
     return TransferOut(
         id=transfer.id,
         from_account_id=transfer.from_account_id,
         to_account_id=transfer.to_account_id,
         amount_cents=transfer.amount_cents,
+        currency=transfer.currency,
+        to_amount_cents=transfer.to_amount_cents,
+        to_currency=transfer.to_currency,
+        fx_rate=transfer.fx_rate,
         memo=transfer.memo,
         status=transfer.status,
         created_at=transfer.created_at,
@@ -68,13 +77,11 @@ async def create_transfer(
     current: dict = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    # Simplification, not a vulnerability: this service only records the
-    # transfer row. It does not call accounts-service to actually debit/
-    # credit balances — wiring that up end-to-end is out of scope for v1.
-    #
     # INTENTIONALLY VULNERABLE: no check that `from_account_id` belongs to
     # `current["user_id"]` — any authenticated user can record a transfer
-    # moving funds out of any account (BOLA / business-logic flaw).
+    # moving funds out of any account (BOLA / business-logic flaw). The
+    # apply-transfer call below now makes this a *real* drain of the target
+    # account's balance, which sharpens the demo rather than softening it.
     #
     # INTENTIONALLY VULNERABLE: no minimum/maximum on amount_cents (negative
     # values are accepted), no daily limit, and no rate limiting on repeated
@@ -84,11 +91,42 @@ async def create_transfer(
         to_account_id=payload.to_account_id,
         amount_cents=payload.amount_cents,
         memo=payload.memo,
-        status="completed",
+        status="pending",
     )
     db.add(transfer)
     await db.commit()
     await db.refresh(transfer)
+
+    # Actually move the money: call accounts-service over the internal docker
+    # network to debit the source and credit the (currency-converted)
+    # destination. accounts-service is authoritative for balances and FX. If
+    # that call fails we keep the row but mark it failed instead of crashing.
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.post(
+                ACCOUNTS_INTERNAL_URL,
+                json={
+                    "from_account_id": payload.from_account_id,
+                    "to_account_id": payload.to_account_id,
+                    "amount_cents": payload.amount_cents,
+                },
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            transfer.currency = data["from_currency"]
+            transfer.to_currency = data["to_currency"]
+            transfer.to_amount_cents = data["converted_amount_cents"]
+            transfer.fx_rate = data["fx_rate"]
+            transfer.status = "completed"
+        else:
+            transfer.status = "failed"
+        await db.commit()
+        await db.refresh(transfer)
+    except httpx.HTTPError:
+        transfer.status = "failed"
+        await db.commit()
+        await db.refresh(transfer)
+
     return _to_out(transfer)
 
 

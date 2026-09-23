@@ -9,8 +9,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
 from .database import AsyncSessionLocal, Base, engine, get_db
+from .fx import convert
 from .models import Account
-from .schemas import AccountOut, AccountPatchRequest, LinkExternalRequest
+from .schemas import (
+    AccountOut,
+    AccountPatchRequest,
+    ApplyTransferRequest,
+    ApplyTransferResponse,
+    LinkExternalRequest,
+)
 from .security import fetch_jwks, get_current_user
 from .seed import seed_accounts
 
@@ -64,6 +71,53 @@ async def on_startup() -> None:
 @app.get("/health", tags=["health"], summary="Liveness check")
 async def health():
     return {"status": "ok"}
+
+
+# Registered BEFORE the "/accounts/{account_id}" route below so its distinct
+# "/internal/..." prefix is never mistaken for an int path param. This is the
+# single place in NimbusBank where money actually moves and currency actually
+# converts — transfers-service records a row then calls this over the docker
+# network (http://accounts:8000/internal/apply-transfer).
+@app.post(
+    "/internal/apply-transfer",
+    response_model=ApplyTransferResponse,
+    tags=["internal"],
+    summary="Debit the source account and credit the destination, converting currency via the FX table",
+)
+async def apply_transfer(payload: ApplyTransferRequest, db: AsyncSession = Depends(get_db)):
+    # INTENTIONALLY VULNERABLE: this endpoint is called service-to-service and
+    # inherits the same no-ownership-check stance as the rest of accounts-
+    # service. It never verifies that whoever triggered the upstream transfer
+    # owns from_account_id — a real transfer that actually drains someone
+    # else's account is exactly what makes the BOLA demo on POST /transfers
+    # land (API Security: BOLA). There is also NO floor on the resulting
+    # balance: it is allowed to go negative, matching the no-validation intent
+    # on amount elsewhere.
+    src = await db.get(Account, payload.from_account_id)
+    dst = await db.get(Account, payload.to_account_id)
+    if not src or not dst:
+        raise HTTPException(status_code=404, detail="Source or destination account not found")
+
+    converted_amount_cents, fx_rate = convert(payload.amount_cents, src.currency, dst.currency)
+
+    # Debit source in its own currency, credit destination the converted
+    # amount, commit atomically. No balance floor — negatives are allowed.
+    src.balance_cents = src.balance_cents - payload.amount_cents
+    dst.balance_cents = dst.balance_cents + converted_amount_cents
+    await db.commit()
+    await db.refresh(src)
+    await db.refresh(dst)
+
+    return ApplyTransferResponse(
+        from_account_id=src.id,
+        from_balance_cents=src.balance_cents,
+        to_account_id=dst.id,
+        to_balance_cents=dst.balance_cents,
+        from_currency=src.currency,
+        to_currency=dst.currency,
+        converted_amount_cents=converted_amount_cents,
+        fx_rate=fx_rate,
+    )
 
 
 @app.get(

@@ -130,6 +130,9 @@ export default function Login() {
               {loading ? 'Signing in…' : 'Sign in'}
             </button>
             <p className="alt-link">
+              <Link to="/forgot">Forgot password?</Link>
+            </p>
+            <p className="alt-link">
               New to NimbusBank? <Link to="/register">Create an account</Link>
             </p>
           </form>

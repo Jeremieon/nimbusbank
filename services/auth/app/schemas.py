@@ -75,3 +75,43 @@ class TokenResponse(BaseModel):
 class RefreshResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    message: str
+    user_id: str
+    # LAB-ONLY: the reset token is echoed back in the response body so you can
+    # exercise the reset flow without a mail server — exactly like the login
+    # OTP. A real bank would send this out-of-band and never return it in an
+    # API response.
+    reset_token: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class ChangePasswordRequest(BaseModel):
+    # The API still accepts current_password so the shape is realistic, but
+    # INTENTIONALLY VULNERABLE: the endpoint never verifies it (see main.py).
+    current_password: str = ""
+    new_password: str = Field(min_length=8, max_length=128)
+
+
+class ProfileUpdateRequest(BaseModel):
+    """INTENTIONALLY VULNERABLE: mass assignment. Every field is optional and
+    there is NO allowlist of caller-settable fields — a plain customer can
+    include privileged fields like `role`, `is_verified`, `email`, or
+    `ssn_last4` and have them written straight onto their own user row (see
+    main.py's PATCH /me). This is the marquee privilege-escalation gap."""
+
+    full_name: str | None = None
+    email: EmailStr | None = None
+    ssn_last4: str | None = None
+    role: str | None = None
+    is_verified: bool | None = None

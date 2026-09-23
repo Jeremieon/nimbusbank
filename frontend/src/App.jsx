@@ -4,10 +4,13 @@ import AccountDetail from './pages/AccountDetail'
 import AgentConsole from './pages/AgentConsole'
 import Cards from './pages/Cards'
 import Dashboard from './pages/Dashboard'
+import ForgotPassword from './pages/ForgotPassword'
 import Kyc from './pages/Kyc'
 import Login from './pages/Login'
 import Ops from './pages/Ops'
+import Profile from './pages/Profile'
 import Register from './pages/Register'
+import ResetPassword from './pages/ResetPassword'
 import Security from './pages/Security'
 import Support from './pages/Support'
 import Transfer from './pages/Transfer'
@@ -19,6 +22,9 @@ export default function App() {
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/forgot" element={<ForgotPassword />} />
+      <Route path="/reset" element={<ResetPassword />} />
+      <Route path="/profile" element={<Profile />} />
       <Route path="/dashboard" element={<Dashboard />} />
       <Route path="/accounts/:id" element={<AccountDetail />} />
       <Route path="/accounts/:id/history" element={<TransactionHistory />} />

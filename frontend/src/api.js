@@ -28,6 +28,13 @@ export const auth = {
   verifyTotp: (payload) => request('/auth/login/totp/verify', { method: 'POST', body: JSON.stringify(payload) }),
   refresh: () => request('/auth/token/refresh', { method: 'POST' }),
   me: () => request('/auth/me'),
+  forgotPassword: ({ email }) => request('/auth/password/forgot', { method: 'POST', body: JSON.stringify({ email }) }),
+  resetPassword: ({ token, new_password }) => request('/auth/password/reset', { method: 'POST', body: JSON.stringify({ token, new_password }) }),
+  // PATCH /me is deliberately mass-assignable — the payload can include `role`
+  // and elevate the caller (see auth-service main.py).
+  updateProfile: (payload) => request('/auth/me', { method: 'PATCH', body: JSON.stringify(payload) }),
+  changePassword: ({ current_password, new_password }) =>
+    request('/auth/password/change', { method: 'POST', body: JSON.stringify({ current_password, new_password }) }),
 }
 
 // Real TOTP (Google Authenticator) second factor — opt-in via the Security

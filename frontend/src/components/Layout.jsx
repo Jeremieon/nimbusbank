@@ -39,6 +39,9 @@ export default function Layout({ children, authed = true }) {
               <NavLink to="/security" className={({ isActive }) => (isActive ? 'active' : '')}>
                 Security
               </NavLink>
+              <NavLink to="/profile" className={({ isActive }) => (isActive ? 'active' : '')}>
+                Profile
+              </NavLink>
               <NavLink to="/ops" className={({ isActive }) => (isActive ? 'active' : '')}>
                 Ops
               </NavLink>

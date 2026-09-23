@@ -13,15 +13,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
 from .database import AsyncSessionLocal, Base, engine, get_db
-from .models import OtpCode, User
+from .models import OtpCode, PasswordResetToken, User
 from .obslog import install_request_logging
 from .schemas import (
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     LoginResponse,
     OtpVerifyRequest,
+    ProfileUpdateRequest,
     RefreshResponse,
     RegisterRequest,
     RegisterResponse,
+    ResetPasswordRequest,
     TokenResponse,
     TotpConfirmRequest,
     TotpEnrollResponse,
@@ -368,3 +373,140 @@ async def me(current: dict = Depends(get_current_user), db: AsyncSession = Depen
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return _to_user_out(user)
+
+
+@app.patch(
+    "/me",
+    response_model=UserOut,
+    tags=["auth"],
+    summary="Update the current user's profile",
+)
+async def update_me(
+    payload: ProfileUpdateRequest,
+    current: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # INTENTIONALLY VULNERABLE: mass assignment -> privilege escalation / BFLA
+    # enabler (API Security: Mass Assignment). Exactly like accounts-service's
+    # update_account, this applies whichever fields the caller supplied with no
+    # allowlist of what a customer is permitted to change. So a plain customer
+    # can PATCH /me with {"role":"admin"} (or flip is_verified, or rewrite
+    # email / ssn_last4) and elevate their own row. After that, their next
+    # access token carries role:"admin" and every BFLA/admin-gated endpoint in
+    # the app that *does* check role opens up to them. The permissive schema
+    # (all fields optional) + model_dump(exclude_unset=True) + setattr is the
+    # whole vuln — no field is off-limits.
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(user, field, value)
+
+    await db.commit()
+    await db.refresh(user)
+
+    # The returned role now reflects whatever the caller set — a customer who
+    # sent {"role":"admin"} sees role:"admin" here.
+    return _to_user_out(user)
+
+
+@app.post(
+    "/password/change",
+    tags=["auth"],
+    summary="Change the current user's password",
+)
+async def change_password(
+    payload: ChangePasswordRequest,
+    current: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # INTENTIONALLY VULNERABLE: broken authentication / insufficient
+    # verification for a sensitive action. We accept `current_password` in the
+    # body (so the API shape is realistic) but NEVER check it — the change is
+    # authorized on the bearer token alone. A stolen/leaked access token, a
+    # borrowed session, or any place a token outlives its owner's intent can
+    # silently rotate the victim's password without knowing the old one.
+    user.password_hash = hash_password(payload.new_password)
+    await db.commit()
+
+    return {"message": "Password changed."}
+
+
+@app.post(
+    "/password/forgot",
+    response_model=ForgotPasswordResponse,
+    tags=["auth"],
+    summary="Request a password-reset token for an email",
+)
+async def forgot_password(payload: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+    user = await db.scalar(select(User).where(User.email == payload.email))
+
+    if not user:
+        # INTENTIONALLY VULNERABLE: account enumeration. A distinct 404 for an
+        # unknown email (vs. a 200 with a token for a known one) lets an
+        # attacker confirm exactly which emails have accounts before targeting
+        # them — the response shape leaks account existence.
+        raise HTTPException(status_code=404, detail="No account with that email")
+
+    # INTENTIONALLY VULNERABLE: short, guessable token. A 6-digit numeric
+    # string is only 1,000,000 possibilities (and see /password/reset — there
+    # is no attempt cap there), so the token is bruteforceable. It's also not
+    # bound to any session or device.
+    token = f"{random.randint(0, 999999):06d}"
+    reset = PasswordResetToken(
+        user_id=user.id,
+        token=token,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+    )
+    db.add(reset)
+    await db.commit()
+
+    # INTENTIONALLY VULNERABLE: no rate limit / no per-IP or per-account
+    # throttle on this endpoint — it can be hammered to flood reset tokens
+    # (reset flooding) as fast as the network allows.
+    #
+    # LAB-ONLY: the reset token is echoed back in this response body so you can
+    # exercise the flow without a mail/SMS server, exactly like the login OTP.
+    # A real bank would deliver it out-of-band and never return it here.
+    return ForgotPasswordResponse(
+        message="Password reset token generated.",
+        user_id=str(user.id),
+        reset_token=token,
+    )
+
+
+@app.post(
+    "/password/reset",
+    tags=["auth"],
+    summary="Reset a password using a reset token",
+)
+async def reset_password(payload: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    # INTENTIONALLY VULNERABLE: no rate limit and no attempt cap on token
+    # submission — nothing throttles guessing the 6-digit token here, so the
+    # short keyspace from /password/forgot is trivially bruteforceable. The
+    # token is also not bound to any session/device: whoever presents a valid
+    # unconsumed token resets that account, no other proof required.
+    reset = await db.scalar(
+        select(PasswordResetToken)
+        .where(PasswordResetToken.token == payload.token, PasswordResetToken.consumed.is_(False))
+        .order_by(PasswordResetToken.created_at.desc())
+    )
+
+    if not reset or reset.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = await db.get(User, reset.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.password_hash = hash_password(payload.new_password)
+    reset.consumed = True
+    await db.commit()
+
+    return {"message": "Password has been reset. You can now sign in."}

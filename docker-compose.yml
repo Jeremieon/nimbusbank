@@ -205,6 +205,25 @@ services:
       admin:
         condition: service_healthy
 
+  # Opt-in integration test runner. Guarded by the "test" profile so it NEVER
+  # starts on a normal `docker compose up`. It joins the same default network,
+  # so it reaches the gateway as http://gateway:80. The tests/ dir is
+  # bind-mounted so edits are picked up without an image rebuild.
+  # Run it with:  docker compose run --rm tests
+  tests:
+    profiles: ["test"]
+    build:
+      context: ./tests
+      dockerfile: Dockerfile
+    environment:
+      BASE_URL: http://gateway:80
+    volumes:
+      - ./tests:/tests
+    working_dir: /tests
+    depends_on:
+      gateway:
+        condition: service_started
+
 volumes:
   db_data:
   rsa_keys:

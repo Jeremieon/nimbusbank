@@ -673,6 +673,39 @@ constants) between `services/auth/app/seed.py` and
 This is the one place seed data across services has to agree; it's a
 seeding convenience only, not a runtime dependency between the databases.
 
+## Testing
+
+An automated integration test suite lives in [`tests/`](tests/). It runs
+black-box against the **live** stack through the gateway and has two jobs:
+(1) confirm the happy paths work, and (2) **lock in the intentional
+vulnerabilities** — every gap in the `INTENTIONALLY VULNERABLE` table above has
+a test asserting it is *still* exploitable, so a future refactor that
+accidentally "fixes" or breaks one fails the suite loudly. See
+[`tests/README.md`](tests/README.md) for the full layout and details.
+
+Bring the stack up first (`docker compose up -d`, all healthy — do **not** use
+`-v`), then run the suite. The preferred way needs no host Python — it uses an
+opt-in `tests` service under the `test` compose profile (so it never starts on
+a normal `docker compose up`):
+
+```bash
+docker compose up -d                 # stack must be healthy
+docker compose run --rm tests        # builds tests/Dockerfile, runs pytest -q
+```
+
+Or, if you have Python 3.11+ on the host:
+
+```bash
+cd tests
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+pytest -q                            # BASE_URL defaults to http://localhost:80
+```
+
+The suite is re-runnable (it passes on repeated runs); one test is
+deliberately skipped (the support expired-token contrast, which can't be shown
+black-box — the skip reason explains why).
+
 ## Roadmap
 
 1. ~~auth-service: register/login/OTP/JWT+JWKS~~ — done

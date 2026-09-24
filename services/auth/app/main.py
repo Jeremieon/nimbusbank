@@ -1,7 +1,11 @@
+import base64
+import io
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pyotp
+import qrcode
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
@@ -9,15 +13,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .config import settings
 from .database import AsyncSessionLocal, Base, engine, get_db
-from .models import OtpCode, User
+from .models import OtpCode, PasswordResetToken, User
+from .obslog import install_request_logging
 from .schemas import (
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
     LoginRequest,
     LoginResponse,
     OtpVerifyRequest,
+    ProfileUpdateRequest,
     RefreshResponse,
     RegisterRequest,
     RegisterResponse,
+    ResetPasswordRequest,
     TokenResponse,
+    TotpConfirmRequest,
+    TotpEnrollResponse,
+    TotpStatusResponse,
+    TotpVerifyRequest,
     UserOut,
 )
 from .security import (
@@ -49,6 +63,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Fire-and-forget request logging to admin-service's /ingest sink. Never blocks
+# or fails a real request (see obslog.py); this service keeps working if admin
+# is down.
+install_request_logging(app, "auth")
+
 REFRESH_COOKIE_NAME = "refresh_token"
 
 
@@ -78,8 +97,8 @@ def _set_refresh_cookie(response: Response, user_id: str) -> None:
 @app.on_event("startup")
 async def on_startup() -> None:
     ensure_keys()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Schema creation/evolution is owned by Alembic now (the container runs
+    # `alembic upgrade head` before uvicorn starts), so startup only seeds.
     async with AsyncSessionLocal() as session:
         await seed_users(session)
 
@@ -161,7 +180,12 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     db.add(otp)
     await db.commit()
 
-    return LoginResponse(otp_required=True, user_id=str(user.id), otp=code)
+    return LoginResponse(
+        otp_required=True,
+        user_id=str(user.id),
+        otp=code,
+        totp_enabled=user.totp_enabled,
+    )
 
 
 @app.post(
@@ -203,6 +227,128 @@ async def verify_otp(payload: OtpVerifyRequest, response: Response, db: AsyncSes
 
 
 @app.post(
+    "/login/totp/verify",
+    response_model=TokenResponse,
+    tags=["auth"],
+    summary="Step 2 (TOTP path): verify a 6-digit authenticator code and issue tokens",
+)
+async def verify_totp_login(
+    payload: TotpVerifyRequest, response: Response, db: AsyncSession = Depends(get_db)
+):
+    """The real-second-factor counterpart to /login/otp/verify. A user who
+    enrolled an authenticator app (totp_enabled True) lands here instead of
+    the weak echoed-OTP path, and on success gets the exact same access token
+    + refresh cookie. The weak path is deliberately left fully intact for
+    everyone who hasn't enrolled."""
+    try:
+        user_id = uuid.UUID(payload.user_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid user_id")
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.totp_enabled or not user.totp_secret:
+        raise HTTPException(status_code=400, detail="TOTP is not enabled for this user")
+
+    if not pyotp.TOTP(user.totp_secret).verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+
+    access_token = create_access_token(user_id=str(user.id), role=user.role, email=user.email)
+    _set_refresh_cookie(response, str(user.id))
+
+    return TokenResponse(access_token=access_token, user=_to_user_out(user))
+
+
+@app.get(
+    "/totp/status",
+    response_model=TotpStatusResponse,
+    tags=["totp"],
+    summary="Whether the current user has a confirmed authenticator app",
+)
+async def totp_status(current: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return TotpStatusResponse(totp_enabled=user.totp_enabled)
+
+
+@app.post(
+    "/totp/enroll",
+    response_model=TotpEnrollResponse,
+    tags=["totp"],
+    summary="Begin authenticator-app enrollment: generate a secret + QR (stays unconfirmed until /totp/confirm)",
+)
+async def totp_enroll(current: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Reuse an existing (as-yet-unconfirmed) secret rather than churning it on
+    # every page load; only generate a fresh one if none is stored.
+    if not user.totp_secret:
+        user.totp_secret = pyotp.random_base32()
+        # totp_enabled stays False until /totp/confirm proves possession.
+        await db.commit()
+
+    otpauth_uri = pyotp.totp.TOTP(user.totp_secret).provisioning_uri(
+        name=user.email, issuer_name="NimbusBank"
+    )
+
+    img = qrcode.make(otpauth_uri)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    qr_png_base64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+    return TotpEnrollResponse(
+        secret=user.totp_secret,
+        otpauth_uri=otpauth_uri,
+        qr_png_base64=qr_png_base64,
+    )
+
+
+@app.post(
+    "/totp/confirm",
+    tags=["totp"],
+    summary="Confirm authenticator enrollment by submitting a valid 6-digit code",
+)
+async def totp_confirm(
+    payload: TotpConfirmRequest,
+    current: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if not user.totp_secret:
+        raise HTTPException(status_code=400, detail="Start enrollment with /totp/enroll first")
+
+    if not pyotp.TOTP(user.totp_secret).verify(payload.code, valid_window=1):
+        raise HTTPException(status_code=401, detail="Invalid authenticator code")
+
+    user.totp_enabled = True
+    await db.commit()
+    return {"totp_enabled": True, "message": "Authenticator app enabled."}
+
+
+@app.post(
+    "/totp/disable",
+    tags=["totp"],
+    summary="Disable the authenticator app and clear its secret",
+)
+async def totp_disable(current: dict = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    user.totp_secret = None
+    user.totp_enabled = False
+    await db.commit()
+    return {"totp_enabled": False, "message": "Authenticator app disabled."}
+
+
+@app.post(
     "/token/refresh",
     response_model=RefreshResponse,
     tags=["auth"],
@@ -227,3 +373,140 @@ async def me(current: dict = Depends(get_current_user), db: AsyncSession = Depen
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return _to_user_out(user)
+
+
+@app.patch(
+    "/me",
+    response_model=UserOut,
+    tags=["auth"],
+    summary="Update the current user's profile",
+)
+async def update_me(
+    payload: ProfileUpdateRequest,
+    current: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # INTENTIONALLY VULNERABLE: mass assignment -> privilege escalation / BFLA
+    # enabler (API Security: Mass Assignment). Exactly like accounts-service's
+    # update_account, this applies whichever fields the caller supplied with no
+    # allowlist of what a customer is permitted to change. So a plain customer
+    # can PATCH /me with {"role":"admin"} (or flip is_verified, or rewrite
+    # email / ssn_last4) and elevate their own row. After that, their next
+    # access token carries role:"admin" and every BFLA/admin-gated endpoint in
+    # the app that *does* check role opens up to them. The permissive schema
+    # (all fields optional) + model_dump(exclude_unset=True) + setattr is the
+    # whole vuln — no field is off-limits.
+    updates = payload.model_dump(exclude_unset=True)
+    for field, value in updates.items():
+        setattr(user, field, value)
+
+    await db.commit()
+    await db.refresh(user)
+
+    # The returned role now reflects whatever the caller set — a customer who
+    # sent {"role":"admin"} sees role:"admin" here.
+    return _to_user_out(user)
+
+
+@app.post(
+    "/password/change",
+    tags=["auth"],
+    summary="Change the current user's password",
+)
+async def change_password(
+    payload: ChangePasswordRequest,
+    current: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = await db.get(User, uuid.UUID(current["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # INTENTIONALLY VULNERABLE: broken authentication / insufficient
+    # verification for a sensitive action. We accept `current_password` in the
+    # body (so the API shape is realistic) but NEVER check it — the change is
+    # authorized on the bearer token alone. A stolen/leaked access token, a
+    # borrowed session, or any place a token outlives its owner's intent can
+    # silently rotate the victim's password without knowing the old one.
+    user.password_hash = hash_password(payload.new_password)
+    await db.commit()
+
+    return {"message": "Password changed."}
+
+
+@app.post(
+    "/password/forgot",
+    response_model=ForgotPasswordResponse,
+    tags=["auth"],
+    summary="Request a password-reset token for an email",
+)
+async def forgot_password(payload: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
+    user = await db.scalar(select(User).where(User.email == payload.email))
+
+    if not user:
+        # INTENTIONALLY VULNERABLE: account enumeration. A distinct 404 for an
+        # unknown email (vs. a 200 with a token for a known one) lets an
+        # attacker confirm exactly which emails have accounts before targeting
+        # them — the response shape leaks account existence.
+        raise HTTPException(status_code=404, detail="No account with that email")
+
+    # INTENTIONALLY VULNERABLE: short, guessable token. A 6-digit numeric
+    # string is only 1,000,000 possibilities (and see /password/reset — there
+    # is no attempt cap there), so the token is bruteforceable. It's also not
+    # bound to any session or device.
+    token = f"{random.randint(0, 999999):06d}"
+    reset = PasswordResetToken(
+        user_id=user.id,
+        token=token,
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+    )
+    db.add(reset)
+    await db.commit()
+
+    # INTENTIONALLY VULNERABLE: no rate limit / no per-IP or per-account
+    # throttle on this endpoint — it can be hammered to flood reset tokens
+    # (reset flooding) as fast as the network allows.
+    #
+    # LAB-ONLY: the reset token is echoed back in this response body so you can
+    # exercise the flow without a mail/SMS server, exactly like the login OTP.
+    # A real bank would deliver it out-of-band and never return it here.
+    return ForgotPasswordResponse(
+        message="Password reset token generated.",
+        user_id=str(user.id),
+        reset_token=token,
+    )
+
+
+@app.post(
+    "/password/reset",
+    tags=["auth"],
+    summary="Reset a password using a reset token",
+)
+async def reset_password(payload: ResetPasswordRequest, db: AsyncSession = Depends(get_db)):
+    # INTENTIONALLY VULNERABLE: no rate limit and no attempt cap on token
+    # submission — nothing throttles guessing the 6-digit token here, so the
+    # short keyspace from /password/forgot is trivially bruteforceable. The
+    # token is also not bound to any session/device: whoever presents a valid
+    # unconsumed token resets that account, no other proof required.
+    reset = await db.scalar(
+        select(PasswordResetToken)
+        .where(PasswordResetToken.token == payload.token, PasswordResetToken.consumed.is_(False))
+        .order_by(PasswordResetToken.created_at.desc())
+    )
+
+    if not reset or reset.expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+
+    user = await db.get(User, reset.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    user.password_hash = hash_password(payload.new_password)
+    reset.consumed = True
+    await db.commit()
+
+    return {"message": "Password has been reset. You can now sign in."}

@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Integer, String, Text
+from sqlalchemy import DateTime, Float, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .database import Base
@@ -18,6 +18,17 @@ class Transfer(Base):
     to_account_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
 
     amount_cents: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    # Multi-currency: amount_cents above is denominated in `currency` (the
+    # source account's currency). accounts-service's /internal/apply-transfer
+    # is authoritative — it returns the source/destination currencies, the
+    # converted destination amount, and the effective rate, which get
+    # persisted back onto these columns after the row is first inserted.
+    # Nullable so a transfer whose apply-transfer call failed still has a row.
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    to_amount_cents: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    to_currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    fx_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # INTENTIONALLY VULNERABLE: stored exactly as submitted, no HTML-escaping
     # expectation. The frontend renders this with dangerouslySetInnerHTML in

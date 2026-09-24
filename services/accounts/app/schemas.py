@@ -26,3 +26,21 @@ class AccountPatchRequest(BaseModel):
 class LinkExternalRequest(BaseModel):
     account_id: int
     verification_url: str = Field(max_length=2048)
+
+
+class ApplyTransferRequest(BaseModel):
+    # amount_cents is denominated in the FROM account's currency.
+    from_account_id: int
+    to_account_id: int
+    amount_cents: int
+
+
+class ApplyTransferResponse(BaseModel):
+    from_account_id: int
+    from_balance_cents: int
+    to_account_id: int
+    to_balance_cents: int
+    from_currency: str
+    to_currency: str
+    converted_amount_cents: int
+    fx_rate: float

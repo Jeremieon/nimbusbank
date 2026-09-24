@@ -23,6 +23,11 @@ class Account(Base):
 
     account_number: Mapped[str] = mapped_column(String(34), unique=True, nullable=False)
     account_type: Mapped[str] = mapped_column(String(20), nullable=False)
+
+    # Optional, user-facing label for an account. Nullable and unused by the
+    # API/UI on purpose: it exists only to exercise the Alembic migration path
+    # (an additive, non-destructive schema change applied to a live database).
+    nickname: Mapped[str | None] = mapped_column(String(60), nullable=True)
     balance_cents: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="USD")
 

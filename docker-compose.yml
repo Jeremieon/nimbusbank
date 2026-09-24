@@ -23,6 +23,7 @@ services:
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-15}
       JWT_REFRESH_EXPIRE_DAYS: ${JWT_REFRESH_EXPIRE_DAYS:-7}
       OTP_EXPIRE_MINUTES: ${OTP_EXPIRE_MINUTES:-5}
+      ADMIN_INGEST_URL: http://admin:8000/ingest
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -49,6 +50,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/accounts
       AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -71,6 +73,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/transfers
       AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
@@ -80,6 +83,98 @@ services:
       db:
         condition: service_healthy
       auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kyc:
+    build: ./services/kyc
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/kyc
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8004:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  support:
+    build: ./services/support
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/support
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8005:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  cards:
+    build: ./services/cards
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/cards
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      ADMIN_INGEST_URL: http://admin:8000/ingest
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8006:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      auth:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # admin-service is the central request-log sink and ops-traffic API. It has an
+  # unauthenticated /ingest + /admin/traffic view, so it deliberately does NOT
+  # depend on auth — it comes up on its own and starts collecting log events.
+  admin:
+    build: ./services/admin
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/admin
+      AUTH_JWKS_URL: http://auth:8000/.well-known/jwks.json
+      SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    ports:
+      - "8007:8000"
+    depends_on:
+      db:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -101,6 +196,53 @@ services:
         condition: service_healthy
       transfers:
         condition: service_healthy
+      kyc:
+        condition: service_healthy
+      support:
+        condition: service_healthy
+      cards:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+
+  # Opt-in integration test runner. Guarded by the "test" profile so it NEVER
+  # starts on a normal `docker compose up`. It joins the same default network,
+  # so it reaches the gateway as http://gateway:80. The tests/ dir is
+  # bind-mounted so edits are picked up without an image rebuild.
+  # Run it with:  docker compose run --rm tests
+  tests:
+    profiles: ["test"]
+    build:
+      context: ./tests
+      dockerfile: Dockerfile
+    environment:
+      BASE_URL: http://gateway:80
+    volumes:
+      - ./tests:/tests
+    working_dir: /tests
+    depends_on:
+      gateway:
+        condition: service_started
+
+  # Opt-in bot / traffic generator. Guarded by the "bots" profile so it NEVER
+  # starts on a normal `docker compose up`. Joins the default network and
+  # reaches the gateway as http://gateway:80. The nimbusbank-bots/ dir is
+  # bind-mounted so edits are picked up without a rebuild.
+  # Run the full campaign:      docker compose run --rm bots
+  # Run one script:             docker compose run --rm bots python3 attacks/account_scraping.py
+  bots:
+    profiles: ["bots"]
+    build:
+      context: ./nimbusbank-bots
+      dockerfile: Dockerfile
+    environment:
+      NIMBUS_URL: http://gateway:80
+    volumes:
+      - ./nimbusbank-bots:/bots
+    working_dir: /bots
+    depends_on:
+      gateway:
+        condition: service_started
 
 volumes:
   db_data:

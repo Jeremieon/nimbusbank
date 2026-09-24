@@ -2,10 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { accounts, auth } from '../api'
-
-function formatCents(cents) {
-  return (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-}
+import Layout from '../components/Layout'
+import { formatMoney, maskAccountNumber, totalInUsdCents } from '../money'
 
 export default function Dashboard() {
   const [user, setUser] = useState(null)
@@ -28,50 +26,42 @@ export default function Dashboard() {
       .finally(() => setLoading(false))
   }, [navigate])
 
-  const onLogout = () => {
-    localStorage.removeItem('nimbus_access_token')
-    navigate('/login')
-  }
-
   if (loading) return null
 
+  const firstName = user ? user.full_name.split(' ')[0] : ''
+  const totalUsd = totalInUsdCents(accts)
+
   return (
-    <div className="dashboard">
-      <div className="dashboard-header">
-        <div>
-          <p className="brand">NimbusBank</p>
-          <h1 className="title" style={{ margin: 0 }}>
-            {user ? `Welcome, ${user.full_name}` : 'Welcome'}
-          </h1>
-        </div>
-        <button className="secondary" onClick={onLogout}>
-          Log out
-        </button>
-      </div>
+    <Layout>
+      <p className="subtitle" style={{ margin: 0 }}>Overview</p>
+      <h1 className="greeting">{user ? `Welcome back, ${firstName}` : 'Welcome back'}</h1>
 
       {error && <div className="error">{error}</div>}
 
+      <div className="total-card">
+        <p className="label">Total balance</p>
+        <div className="amount">{formatMoney(totalUsd, 'USD')}</div>
+        <p className="sublabel">Across {accts.length} account{accts.length === 1 ? '' : 's'}, converted to USD</p>
+      </div>
+
       <p className="section-label">Your accounts</p>
-      <div className="account-list">
+      <div className="account-grid">
         {accts.map((a) => (
-          <Link key={a.id} to={`/accounts/${a.id}`} className="account-card">
-            <div className="account-card-top">
-              <span>
-                {a.account_type} · {a.account_number}
-              </span>
-              <span>id {a.id}</span>
+          <div key={a.id} className="account-card">
+            <div className="account-card-head">
+              <span className="account-type">{a.account_type}</span>
+              <span className="ccy-chip">{a.currency}</span>
             </div>
-            <div className="account-card-balance">{formatCents(a.balance_cents)}</div>
-          </Link>
+            <div className="account-number">{maskAccountNumber(a.account_number)}</div>
+            <div className="account-balance">{formatMoney(a.balance_cents, a.currency)}</div>
+            <div className="account-actions">
+              <Link to={`/accounts/${a.id}`} className="btn-outline">View</Link>
+              <Link to={`/transfer?from=${a.id}`} className="btn">Send money</Link>
+            </div>
+          </div>
         ))}
         {accts.length === 0 && <p className="subtitle">No accounts found.</p>}
       </div>
-
-      <div className="actions-row">
-        <Link to="/transfer" className="secondary-link">
-          Send a transfer
-        </Link>
-      </div>
-    </div>
+    </Layout>
   )
 }

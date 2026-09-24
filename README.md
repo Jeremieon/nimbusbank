@@ -706,6 +706,32 @@ The suite is re-runnable (it passes on repeated runs); one test is
 deliberately skipped (the support expired-token contrast, which can't be shown
 black-box — the skip reason explains why).
 
+## Attack & traffic simulation
+
+A bot / traffic toolkit lives in [`nimbusbank-bots/`](nimbusbank-bots/). It
+generates both **legitimate** baseline traffic and **attack** traffic that
+exercises the intentional gaps — credential stuffing, OTP brute-force,
+fake-account farming, BOLA account/card scraping, KYC PII scraping, a one-shot
+SQLi dump, `PATCH /me` privilege escalation, and a bounded app-DoS burst — plus
+a `run_all.py` campaign that runs them in sequence so the `/ops` console lights
+up. Every script maps itself to the vulnerability it drives; see
+[`nimbusbank-bots/README.md`](nimbusbank-bots/README.md).
+
+Like the tests, it runs containerized via an opt-in `bots` compose profile (so
+it never starts on a normal `docker compose up`) and reaches the gateway as
+`http://gateway:80`:
+
+```bash
+docker compose up -d                                   # stack must be healthy
+docker compose run --rm bots                           # the full campaign
+docker compose run --rm bots attacks/account_scraping.py   # a single script
+```
+
+Then watch the surge on the Ops console (`http://localhost/ops`) or via
+`curl -s http://localhost/api/admin/admin/traffic`. Scraping scripts write
+git-ignored CSVs of the stolen data. **Lab-only — never point these at anything
+you don't own.**
+
 ## Roadmap
 
 1. ~~auth-service: register/login/OTP/JWT+JWKS~~ — done
@@ -718,9 +744,11 @@ black-box — the skip reason explains why).
    JWT validation / expired-token-accepted), each with a clean
    `/openapi.json`~~ — done. Still to do: the walkthrough of uploading each
    service's `/openapi.json` to F5 XC's API schema validation feature.
-6. **Phase 3:** bot scripts against `/login`, `/login/otp/verify`, and
-   `/register` (plain HTTP + a headless-browser variant), similar in spirit
-   to VulnCart's `vulncart-bots/`.
+6. ~~**Phase 3:** bot scripts against `/login`, `/login/otp/verify`,
+   `/register` and the BOLA/BFLA/SQLi endpoints (plain HTTP), similar in spirit
+   to VulnCart's `vulncart-bots/`~~ — done, in [`nimbusbank-bots/`](nimbusbank-bots/)
+   (legit baseline + attack scripts + a `run_all.py` campaign, runnable via the
+   `bots` compose profile).
 7. ~~**Phase 4:** a malware/malicious-file-upload demo~~ — done, attached to
    `kyc-service`'s `POST /kyc/upload` (no type/AV check; see the vulnerability
    table).

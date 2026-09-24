@@ -1,0 +1,4 @@
+# Stolen-data dumps produced by the scraping scripts — never commit these.
+*.csv
+__pycache__/
+*.pyc

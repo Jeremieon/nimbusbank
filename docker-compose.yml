@@ -224,6 +224,26 @@ services:
       gateway:
         condition: service_started
 
+  # Opt-in bot / traffic generator. Guarded by the "bots" profile so it NEVER
+  # starts on a normal `docker compose up`. Joins the default network and
+  # reaches the gateway as http://gateway:80. The nimbusbank-bots/ dir is
+  # bind-mounted so edits are picked up without a rebuild.
+  # Run the full campaign:      docker compose run --rm bots
+  # Run one script:             docker compose run --rm bots python3 attacks/account_scraping.py
+  bots:
+    profiles: ["bots"]
+    build:
+      context: ./nimbusbank-bots
+      dockerfile: Dockerfile
+    environment:
+      NIMBUS_URL: http://gateway:80
+    volumes:
+      - ./nimbusbank-bots:/bots
+    working_dir: /bots
+    depends_on:
+      gateway:
+        condition: service_started
+
 volumes:
   db_data:
   rsa_keys:

@@ -1,7 +1,7 @@
 """
 custom_header_attack.py — a "zero-day" delivered via a custom request header.
 
-F5 ADSP Cyber Range challenge:
+Challenge (OWASP API Top 10 style):
     #4 Zero-day via a custom request header — requests carrying a specific
        custom header (name + value) a Service Policy would match, plus a
        "re-engineered" variant that renames the header to evade a narrow rule.

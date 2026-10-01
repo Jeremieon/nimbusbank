@@ -1,7 +1,7 @@
 """
 sqli_signatures.py — fire a LIBRARY of SQL-injection payloads at the app.
 
-F5 ADSP Cyber Range challenges:
+Challenges (OWASP API Top 10 style):
     #1 SQL injection — basic (high-accuracy signatures).
     #2 SQL injection — advanced (UNION / @@version / error / boolean / time
        based — medium-accuracy signatures).

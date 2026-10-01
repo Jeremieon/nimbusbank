@@ -55,8 +55,9 @@ the point of this journey.
 | **9** | API9 Improper Inventory | shadow `/legacy/export`, `/legacy/orders` | AWAF **OAS enforcement** (reject undocumented) + API discovery | `xc/shadow_api.py` |
 | **10** | API10 Unsafe Consumption of APIs | services consuming auth JWKS | AWAF OAS validation of consumed APIs | — |
 
-We write each chapter when you reach it, pulling F5's exact recommended controls
-from their OWASP API Top 10 guide and turning them into GUI steps against your VS.
+We write each chapter when you reach it, mapping each OWASP API Security Top 10
+category to the BIG-IP control that addresses it, as concrete GUI steps against
+your VS.
 
 ---
 

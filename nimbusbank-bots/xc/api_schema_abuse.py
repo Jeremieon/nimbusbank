@@ -1,7 +1,7 @@
 """
 api_schema_abuse.py — requests that VIOLATE the documented OpenAPI schema.
 
-F5 ADSP Cyber Range challenge:
+Challenge (OWASP API Top 10 style):
     #6 API misuse / schema validation — an extra unexpected property, a
        wrong field type, and a missing required field.
 XC signal produced:

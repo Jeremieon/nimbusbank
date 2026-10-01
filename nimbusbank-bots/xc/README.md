@@ -1,9 +1,9 @@
-# xc/ — F5 ADSP Cyber Range attack pack
+# xc/ — API security challenge attack pack
 
-An attack-traffic pack that reproduces the eight attack types from the **F5 ADSP
-Cyber Range** challenge set against the NimbusBank lab, so you can fire them at
-the app once it sits behind **F5 Distributed Cloud (XC)** and practise
-detection, scoring and mitigation.
+An attack-traffic pack that reproduces eight common API attack types (an OWASP
+API Security Top 10-style challenge set) against the NimbusBank lab, so you can
+fire them at the app once it sits behind **F5 Distributed Cloud (XC)** and
+practise detection, scoring and mitigation.
 
 > ⚠️ **Lab-only.** These scripts generate attack traffic. Point them at nothing
 > you don't own. They don't try to evade anything — the point is to *trigger*
@@ -13,7 +13,7 @@ detection, scoring and mitigation.
 
 ## Challenge → script → XC signal
 
-| # | F5 ADSP Cyber Range attack type | Script | XC feature / signal exercised |
+| # | Challenge / attack type | Script | XC feature / signal exercised |
 |---|---|---|---|
 | 1 | SQL injection — basic (high-accuracy signatures) | `sqli_signatures.py --set basic` | WAF SQLi signatures — **high** confidence |
 | 2 | SQL injection — advanced (UNION / `@@version` / error / boolean / time-based) | `sqli_signatures.py --set advanced` | WAF SQLi signatures — **medium** confidence |

@@ -1,7 +1,7 @@
 """
 malicious_user_xss.py — a sustained XSS campaign from ONE fixed client identity.
 
-F5 ADSP Cyber Range challenge:
+Challenge (OWASP API Top 10 style):
     #5 Malicious users — the SAME client identity (a constant custom header,
        e.g. X-Malicious-Client: true) delivers XSS payloads across many
        requests, so a malicious-user profile builds up over time.

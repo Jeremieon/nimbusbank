@@ -1,7 +1,7 @@
 """
 suspicious_bot.py — an automated client that crawls many endpoints fast.
 
-F5 ADSP Cyber Range challenge:
+Challenge (OWASP API Top 10 style):
     #3 Suspicious bot traffic — an automated client with an HTTP-library
        User-Agent sweeping across many endpoints.
 XC signal produced:

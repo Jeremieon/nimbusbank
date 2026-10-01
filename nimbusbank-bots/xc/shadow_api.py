@@ -1,7 +1,7 @@
 """
 shadow_api.py — traffic to undocumented endpoints absent from the schema.
 
-F5 ADSP Cyber Range challenge:
+Challenge (OWASP API Top 10 style):
     #8 API discovery — traffic to a shadow/undocumented endpoint that is NOT
        in the service's OpenAPI schema.
 XC signal produced:

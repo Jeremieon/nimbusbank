@@ -1,7 +1,7 @@
 """
 sensitive_data_probe.py — hit endpoints that RETURN sensitive data in responses.
 
-F5 ADSP Cyber Range challenge:
+Challenge (OWASP API Top 10 style):
     #7 Sensitive-data exposure — responses that carry SSN, full PAN+CVV, DOB,
        email, so XC data-discovery/masking has something to find.
 XC signal produced:

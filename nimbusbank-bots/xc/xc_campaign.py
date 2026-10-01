@@ -1,8 +1,8 @@
 """
 xc_campaign.py — run every xc/ attack in sequence to light up all XC detections.
 
-Reproduces the full F5 ADSP Cyber Range challenge set against NimbusBank in one
-command, with clear "F5 Challenge N:" phase banners and small default volumes so
+Reproduces the full API security challenge set against NimbusBank in one
+command, with clear "Challenge N:" phase banners and small default volumes so
 a laptop copes. Point NIMBUS_URL at your XC-protected hostname to practise
 detection against F5 Distributed Cloud.
 
@@ -25,7 +25,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def banner(n, title):
     print("\n" + "=" * 72)
-    print(f" F5 Challenge {n}: {title}")
+    print(f" Challenge {n}: {title}")
     print("=" * 72)
 
 
@@ -39,14 +39,14 @@ def run(script, *cli_args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Full F5 ADSP Cyber Range campaign vs NimbusBank.")
+    ap = argparse.ArgumentParser(description="Full API security challenge campaign vs NimbusBank.")
     ap.add_argument("--scale", type=int, default=1, help="multiplier on the volumes")
     args = ap.parse_args()
     s = max(1, args.scale)
 
     sys.path.insert(0, os.path.dirname(HERE))
     from config import BASE_URL
-    print(f"F5 ADSP Cyber Range campaign against {BASE_URL}")
+    print(f"API security challenge campaign against {BASE_URL}")
     print("(lab-only — point NIMBUS_URL at your XC-protected hostname to test XC)")
     start = time.time()
 

@@ -732,6 +732,30 @@ Then watch the surge on the Ops console (`http://localhost/ops`) or via
 git-ignored CSVs of the stolen data. **Lab-only — never point these at anything
 you don't own.**
 
+### F5 ADSP Cyber Range pack (`nimbusbank-bots/xc/`)
+
+A second pack, [`nimbusbank-bots/xc/`](nimbusbank-bots/xc/README.md),
+reproduces the eight attack types from the **F5 ADSP Cyber Range** challenge
+set so you can fire them at the app once it sits behind **F5 Distributed Cloud
+(XC)** and practise detection: SQL injection (basic/high-accuracy **and**
+advanced UNION/`@@version`/error/boolean/time-based), suspicious bot traffic,
+a zero-day custom request header (with a re-engineered rename variant),
+malicious users (a sustained XSS campaign from one constant client identity),
+API schema-validation abuse (extra/wrong-type/missing fields), sensitive-data
+exposure (SSN + full PAN/CVV in responses), and API discovery against two
+**shadow** endpoints that are served but intentionally absent from
+`/openapi.json` (`GET /api/accounts/legacy/export`, `POST /api/accounts/legacy/orders`).
+Each script maps itself to its challenge # and the XC feature it exercises;
+`xc/xc_campaign.py` runs all eight in sequence. Point `NIMBUS_URL` at the
+XC-protected hostname to practise against XC. See
+[`nimbusbank-bots/xc/README.md`](nimbusbank-bots/xc/README.md).
+
+```bash
+docker compose run --rm bots xc/xc_campaign.py             # all 8 challenges
+docker compose run --rm bots xc/sqli_signatures.py --set all
+docker compose run --rm bots xc/shadow_api.py              # shadow-endpoint discovery
+```
+
 ## Roadmap
 
 1. ~~auth-service: register/login/OTP/JWT+JWKS~~ — done
@@ -748,7 +772,12 @@ you don't own.**
    `/register` and the BOLA/BFLA/SQLi endpoints (plain HTTP), similar in spirit
    to VulnCart's `vulncart-bots/`~~ — done, in [`nimbusbank-bots/`](nimbusbank-bots/)
    (legit baseline + attack scripts + a `run_all.py` campaign, runnable via the
-   `bots` compose profile).
+   `bots` compose profile). Extended with an
+   [`xc/`](nimbusbank-bots/xc/README.md) pack that reproduces the eight **F5
+   ADSP Cyber Range** attack types (SQLi basic/advanced, suspicious bot,
+   custom-header zero-day, malicious-user XSS, API schema abuse, sensitive-data
+   exposure, shadow-API discovery) plus two shadow endpoints on
+   `accounts-service` for API-discovery practice.
 7. ~~**Phase 4:** a malware/malicious-file-upload demo~~ — done, attached to
    `kyc-service`'s `POST /kyc/upload` (no type/AV check; see the vulnerability
    table).

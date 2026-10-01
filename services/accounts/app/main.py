@@ -1,7 +1,8 @@
 import os
+import uuid
 
 import httpx
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from sqlalchemy import select, text
@@ -276,3 +277,33 @@ async def link_external_account(payload: LinkExternalRequest, current=Depends(ge
             "requested_url": payload.verification_url,
             "error": str(exc),
         }
+
+
+# INTENTIONALLY VULNERABLE + SHADOW API: undocumented (include_in_schema=False) so it is absent from /openapi.json — an unmonitored endpoint that dumps every account incl. full SSN. For API-discovery (shadow endpoint) and sensitive-data practice.
+@app.get("/legacy/export", include_in_schema=False)
+async def legacy_export(db: AsyncSession = Depends(get_db)):
+    # No auth and no ownership check at all: reuse the same every-row dump
+    # pattern as the SQLi/BOLA sinks. Because include_in_schema=False, this
+    # route is served but never appears in /openapi.json, so a schema uploaded
+    # to F5 XC won't know it exists — that is what makes it a "shadow" API for
+    # API-discovery practice, and it leaks full SSN for sensitive-data practice.
+    rows = (await db.execute(select(Account))).scalars().all()
+    return [_to_out(a) for a in rows]
+
+
+# INTENTIONALLY VULNERABLE + SHADOW API: undocumented (include_in_schema=False),
+# so it is absent from /openapi.json. Its field types are undocumented too —
+# `amount` is a string in this unofficial contract. The point is to practice
+# discovering the endpoint, authoring a schema for it, and then catching the
+# type mismatches. It takes a raw dict so extra/odd fields silently pass
+# (never 422) and just get echoed back; no real effect on any account.
+@app.post("/legacy/orders", include_in_schema=False)
+async def legacy_create_order(payload: dict = Body(default={})):
+    return {
+        "id": f"ord_{uuid.uuid4().hex[:12]}",
+        "status": "accepted",
+        "account_id": payload.get("account_id"),
+        "amount": payload.get("amount"),
+        "symbol": payload.get("symbol"),
+        "received": payload,
+    }

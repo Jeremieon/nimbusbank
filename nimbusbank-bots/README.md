@@ -14,6 +14,7 @@ compare before/after.
 ## What's here
 
 ```
+attack_engine.py           CONTINUOUS mixed attack+legit traffic with a live 2xx/403 table
 config.py                  shared BASE_URL, seeded creds, the 2-step OTP login helper
 legit/normal_users.py      gentle well-formed customer traffic (a baseline)
 attacks/
@@ -32,6 +33,43 @@ run_all.py                 a scripted campaign: a little legit traffic + the att
 Each attack script has a header docstring naming the vulnerability and the F5 XC
 category it maps to, `argparse` flags with laptop-safe defaults, and a concise
 report. Scraping scripts write a CSV (git-ignored) and print a truncated sample.
+
+## Continuous attack engine (for WAF tuning)
+
+`attack_engine.py` is the one to use when you want to **leave an attack running
+against your endpoint while you build/tune a WAF** (BIG-IP Advanced WAF or F5
+XC), rather than firing a one-shot campaign. It keeps generating a steady blend
+of legitimate and malicious traffic across every category and prints a live
+table — the key column is **BLOCKED(403)**:
+
+```
+category          total     2xx  BLOCKED(403)    4xx   5xx   err
+legit_list          120     120             0      0     0     0
+sqli                 20       0            20      0     0     0   <- WAF now blocking
+bola_read            18       0            18      0     0     0
+...
+TOTAL               ...                            blocked=XX.X%
+```
+
+Against the raw origin everything is `2xx` and `blocked=0.0%`. As you move the
+WAF from monitor to blocking, the attack rows flip to **403** while `legit_list`
+stays green — that's your mitigation working, live.
+
+```bash
+# point it at your endpoint and leave it running
+NIMBUS_URL=https://nimbus.labtestdemo.com python3 attack_engine.py
+NIMBUS_URL=https://nimbus.labtestdemo.com python3 attack_engine.py --rate 8 --concurrency 6 --duration 300
+python3 attack_engine.py --read-only                 # skip state-mutating attacks
+python3 attack_engine.py --only sqli,bola_read,xss_memo
+python3 attack_engine.py --exclude priv_esc,mass_assign
+
+# or containerised (bots compose profile):
+NIMBUS_URL=https://nimbus.labtestdemo.com \
+  docker compose run --rm -e NIMBUS_URL bots attack_engine.py --duration 120
+```
+
+Flags: `--rate` (approx req/s), `--concurrency` (threads), `--duration` (0 =
+until Ctrl-C), `--report-interval`, `--read-only`, `--only`, `--exclude`.
 
 ## Running it
 

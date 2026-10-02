@@ -27,20 +27,30 @@ SEED_DOCUMENTS = [
 ]
 
 
+def _seed_stored_path(upload_dir: str, item: dict) -> str:
+    stored_name = f"seed_{item['user_id'][:8]}_{item['original_filename']}"
+    return os.path.join(upload_dir, stored_name)
+
+
 async def seed_documents(db: AsyncSession, upload_dir: str) -> None:
+    # Always ensure the seeded placeholder files exist on disk. The files live
+    # in the uploads volume while the DB rows live in a separate database; if
+    # the volume is ever reset while the rows survive, the download route would
+    # 404. Re-creating any missing file here keeps the two in sync on every
+    # startup, without needing a full re-seed. Deterministic stored_name means
+    # the path matches whatever is already recorded on the row.
+    for item in SEED_DOCUMENTS:
+        stored_path = _seed_stored_path(upload_dir, item)
+        if not os.path.exists(stored_path):
+            with open(stored_path, "w") as f:
+                f.write(item["body"])
+
     count = await db.scalar(select(func.count()).select_from(KycDocument))
     if count:
         return
 
     for item in SEED_DOCUMENTS:
-        # Write a tiny placeholder file so the download route serves something
-        # real on a fresh database.
-        stored_name = f"seed_{item['user_id'][:8]}_{item['original_filename']}"
-        stored_path = os.path.join(upload_dir, stored_name)
-        with open(stored_path, "w") as f:
-            f.write(item["body"])
-        size_bytes = os.path.getsize(stored_path)
-
+        stored_path = _seed_stored_path(upload_dir, item)
         db.add(
             KycDocument(
                 user_id=item["user_id"],
@@ -48,7 +58,7 @@ async def seed_documents(db: AsyncSession, upload_dir: str) -> None:
                 original_filename=item["original_filename"],
                 content_type=item["content_type"],
                 stored_path=stored_path,
-                size_bytes=size_bytes,
+                size_bytes=os.path.getsize(stored_path),
                 status=item["status"],
             )
         )

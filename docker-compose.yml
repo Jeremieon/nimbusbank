@@ -100,6 +100,12 @@ services:
       SECURITY_LEVEL: ${SECURITY_LEVEL:-vulnerable}
       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:5173}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
+    # Uploaded + seeded KYC files live here. Without this volume they sit in the
+    # container's throwaway layer and vanish on any container recreation, while
+    # the DB rows (on db_data) survive — leaving rows whose files 404 on
+    # download. The volume keeps the two in sync across rebuilds.
+    volumes:
+      - kyc_uploads:/app/app/uploads
     ports:
       - "8004:8000"
     depends_on:
@@ -247,3 +253,4 @@ services:
 volumes:
   db_data:
   rsa_keys:
+  kyc_uploads:

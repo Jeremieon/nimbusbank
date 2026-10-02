@@ -16,6 +16,11 @@ COPY alembic ./alembic
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x entrypoint.sh
 
+# Pre-create the uploads dir so that when the kyc_uploads named volume is first
+# mounted here, Docker initializes it owned by appuser (not root) and the
+# non-root process can write seeded + uploaded files.
+RUN mkdir -p /app/app/uploads
+
 RUN useradd -m appuser && chown -R appuser /app
 USER appuser
 

@@ -732,6 +732,17 @@ Then watch the surge on the Ops console (`http://localhost/ops`) or via
 git-ignored CSVs of the stolen data. **Lab-only — never point these at anything
 you don't own.**
 
+**For WAF tuning**, use the continuous **attack engine** rather than a one-shot
+campaign: it runs a steady mix of legit + attack traffic against your endpoint
+and prints a live 2xx-vs-**403(blocked)** table, so you watch the block rate
+climb as you tighten a BIG-IP Advanced WAF / F5 XC policy:
+
+```bash
+NIMBUS_URL=https://nimbus.labtestdemo.com docker compose run --rm -e NIMBUS_URL bots attack_engine.py
+```
+
+See [`nimbusbank-bots/README.md`](nimbusbank-bots/README.md) for its flags.
+
 ### API security challenge pack (`nimbusbank-bots/xc/`)
 
 A second pack, [`nimbusbank-bots/xc/`](nimbusbank-bots/xc/README.md),
